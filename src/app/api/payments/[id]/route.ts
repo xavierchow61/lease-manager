@@ -29,7 +29,8 @@ export async function PUT(
   if (body.action === "edit") {
     // Full edit of a single document. Status is recomputed from amounts.
     const total = body.totalAmount !== undefined ? num(body.totalAmount) : p.totalAmount;
-    const paid = body.paidAmount !== undefined ? num(body.paidAmount) : p.paidAmount;
+    // 已付永遠不超過總額，避免出現「已付 > 發票金額」
+    const paid = Math.min(body.paidAmount !== undefined ? num(body.paidAmount) : p.paidAmount, total);
     const status = paid >= total && total > 0 ? "已繳費" : paid > 0 ? "部分繳費" : "未繳費";
     const updated = await prisma.payment.update({
       where: { id: p.id },
@@ -50,14 +51,17 @@ export async function PUT(
   }
 
   if (body.action === "partial") {
-    const newPaid = p.paidAmount + num(body.amount);
+    // 本次收款最多補到「尚欠」為止，已付不超過總額
+    const owing = Math.max(p.totalAmount - p.paidAmount, 0);
+    const add = Math.min(num(body.amount), owing);
+    const newPaid = p.paidAmount + add;
     const status =
       newPaid >= p.totalAmount ? "已繳費" : newPaid > 0 ? "部分繳費" : "未繳費";
     const updated = await prisma.payment.update({
       where: { id: p.id },
       data: { paidAmount: newPaid, status, receiptDate: body.date || dateStr() },
     });
-    return ok({ payment: updated });
+    return ok({ payment: updated, applied: add });
   }
 
   // default: set status; mark-paid auto-fills paid amount + receipt date
