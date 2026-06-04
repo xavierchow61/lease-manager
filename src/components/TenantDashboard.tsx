@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Home, Wallet, Wrench, Plus } from "lucide-react";
+import { Home, Wallet, Wrench, Plus, Banknote } from "lucide-react";
 import { api, type User, type AllData } from "@/lib/client";
 import { fmtMoney, fmtNum, todayISO } from "@/lib/money";
 import { useToast, Modal, Stat, Field } from "./ui";
@@ -39,6 +39,11 @@ export default function TenantDashboard({
   const owing = unpaid.reduce((s, p) => s + Math.max(p.totalAmount - p.paidAmount, 0), 0);
   const activeRepairs = repairs.filter((r) => r.status !== "完成").length;
 
+  // 預付款餘額 = Σ預付款 − Σ預付款抵扣
+  const prepayAdded = payments.filter((p) => p.docCategory === "預付款").reduce((s, p) => s + p.paidAmount, 0);
+  const prepayUsed = payments.filter((p) => p.docCategory === "預付款抵扣").reduce((s, p) => s + p.paidAmount, 0);
+  const prepayBalance = Math.max(prepayAdded - prepayUsed, 0);
+
   // file a repair
   const [repairModal, setRepairModal] = useState(false);
   const [desc, setDesc] = useState("");
@@ -73,6 +78,9 @@ export default function TenantDashboard({
           <div className="grid grid-cols-2 gap-3">
             <Stat label="待繳金額" value={fmtMoney(owing, cur)} valueClass="text-red-600" sub={`${unpaid.length} 筆未繳`} />
             <Stat label="進行中維修" value={activeRepairs} valueClass="text-amber-600" />
+            {prepayBalance > 0 && (
+              <Stat label="預付款餘額" value={fmtMoney(prepayBalance, cur)} valueClass="text-violet-600" sub="可抵未來帳單" />
+            )}
           </div>
           {unit && (
             <div className="card">
@@ -91,6 +99,12 @@ export default function TenantDashboard({
       {tab === "payments" && (
         <div className="p-4 md:p-8 space-y-3">
           <h1 className="text-xl md:text-2xl font-bold text-slate-900 tracking-tight">我的帳單</h1>
+          {prepayBalance > 0 && (
+            <div className="card !p-3 bg-violet-50 border border-violet-100 flex items-center gap-2 text-sm text-violet-800">
+              <Banknote size={16} />
+              <span>您目前有預付款餘額 <b className="tnum">{fmtMoney(prepayBalance, cur)}</b>，可由業主用於抵扣未繳帳單。</span>
+            </div>
+          )}
           {payments.map((p) => (
             <div key={p.id} className="card !p-4">
               <div className="flex justify-between items-start">
