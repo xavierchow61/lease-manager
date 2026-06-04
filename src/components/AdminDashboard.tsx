@@ -241,6 +241,8 @@ const blankUnit = (cur: string) => ({
   memo: "",
   waterRate: "",
   electricRate: "",
+  waterReading: "",
+  electricReading: "",
 });
 
 function UnitsTab({
@@ -384,7 +386,10 @@ function UnitsTab({
           <Field label="合約終止日"><input className="input" type="date" value={String(form.leaseEndDate ?? "")} onChange={(e) => setForm({ ...form, leaseEndDate: e.target.value })} /></Field>
           <Field label="水費單價"><input className="input" type="number" value={String(form.waterRate ?? "")} onChange={(e) => setForm({ ...form, waterRate: e.target.value })} /></Field>
           <Field label="電費單價"><input className="input" type="number" value={String(form.electricRate ?? "")} onChange={(e) => setForm({ ...form, electricRate: e.target.value })} /></Field>
+          <Field label="上期水錶讀數（起始底數）"><input className="input" type="number" value={String(form.waterReading ?? "")} onChange={(e) => setForm({ ...form, waterReading: e.target.value })} /></Field>
+          <Field label="上期電錶讀數（起始底數）"><input className="input" type="number" value={String(form.electricReading ?? "")} onChange={(e) => setForm({ ...form, electricReading: e.target.value })} /></Field>
           <div className="md:col-span-2">
+            <p className="text-xs text-slate-500 mb-2">＊ 第一次抄表前，可在此填入目前水/電錶讀數作為「上期讀數」起點；之後每次開水電費單會自動更新。</p>
             <Field label="備忘 / 待辦事項"><textarea className="input" rows={2} value={String(form.memo ?? "")} onChange={(e) => setForm({ ...form, memo: e.target.value })} /></Field>
           </div>
         </div>

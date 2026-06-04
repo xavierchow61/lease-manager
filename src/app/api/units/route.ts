@@ -44,6 +44,8 @@ export async function POST(req: Request) {
       electricRate: num(body.electricRate),
       waterUsage: num(body.waterUsage),
       electricUsage: num(body.electricUsage),
+      waterReading: num(body.waterReading),
+      electricReading: num(body.electricReading),
       contractFileUrl: body.contractFileUrl || "",
     },
   });

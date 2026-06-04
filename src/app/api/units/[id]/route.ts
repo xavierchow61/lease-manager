@@ -41,6 +41,8 @@ export async function PUT(
       electricRate: body.electricRate !== undefined ? num(body.electricRate) : existing.electricRate,
       waterUsage: body.waterUsage !== undefined ? num(body.waterUsage) : existing.waterUsage,
       electricUsage: body.electricUsage !== undefined ? num(body.electricUsage) : existing.electricUsage,
+      waterReading: body.waterReading !== undefined ? num(body.waterReading) : existing.waterReading,
+      electricReading: body.electricReading !== undefined ? num(body.electricReading) : existing.electricReading,
       contractFileUrl: body.contractFileUrl ?? existing.contractFileUrl,
     },
   });
