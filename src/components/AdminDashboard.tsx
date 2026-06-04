@@ -565,6 +565,14 @@ function PaymentsTab({
 
   const tenantName = (code: string) => units.find((u) => u.tenantCode === code)?.tenantName || code;
 
+  // Prepayment balance per tenant = Σ預付款 − Σ預付款抵扣.
+  const prepayBalance = (code: string) => {
+    const pays = payments.filter((p) => p.tenantCode === code);
+    const added = pays.filter((p) => p.docCategory === "預付款").reduce((s, p) => s + p.paidAmount, 0);
+    const used = pays.filter((p) => p.docCategory === "預付款抵扣").reduce((s, p) => s + p.paidAmount, 0);
+    return Math.max(added - used, 0);
+  };
+
   return (
     <div className="p-4 md:p-8 space-y-4">
       <div className="flex items-center justify-between gap-2">
@@ -588,6 +596,13 @@ function PaymentsTab({
           {tenants.map((t) => <option key={t.id} value={t.tenantCode}>{t.tenantName}（{t.tenantCode}）</option>)}
         </select>
       </div>
+
+      {tenantFilter !== "全部" && prepayBalance(tenantFilter) > 0 && (
+        <div className="card !p-3 bg-violet-50 border border-violet-100 flex items-center gap-2 text-sm text-violet-800">
+          <Banknote size={16} />
+          <span>{tenantName(tenantFilter)} 可用預付款餘額 <b className="tnum">{fmtMoney(prepayBalance(tenantFilter), cur)}</b>，可在下方未繳單據按「預付款抵扣」使用。</span>
+        </div>
+      )}
 
       <div className="space-y-2">
         {filtered.map((p) => (
@@ -615,6 +630,9 @@ function PaymentsTab({
                   <>
                     <button className="pill bg-emerald-50 text-emerald-700 hover:bg-emerald-100" onClick={() => call(`payments/${p.id}`, "PUT", { action: "status", status: "已繳費" }, "已標記繳清")}>標記繳清</button>
                     <button className="pill bg-amber-50 text-amber-700 hover:bg-amber-100" onClick={() => setPartial(p)}>部分收款</button>
+                    {prepayBalance(p.tenantCode) > 0 && !["預付款", "預付款抵扣"].includes(p.docCategory) && (
+                      <button className="pill bg-violet-50 text-violet-700 hover:bg-violet-100" title={`可用餘額 ${fmtMoney(prepayBalance(p.tenantCode), p.currency)}`} onClick={() => call(`payments/${p.id}/offset`, "POST", {}, "已用預付款抵扣")}><Banknote size={13} /> 預付款抵扣</button>
+                    )}
                   </>
                 )}
                 <button className="pill bg-slate-100 text-slate-600 hover:bg-slate-200" aria-label="編輯單據" onClick={() => setEditing(p)}><Pencil size={13} /></button>
