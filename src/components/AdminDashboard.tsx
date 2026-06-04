@@ -598,9 +598,22 @@ function PaymentsTab({
       </div>
 
       {tenantFilter !== "全部" && prepayBalance(tenantFilter) > 0 && (
-        <div className="card !p-3 bg-violet-50 border border-violet-100 flex items-center gap-2 text-sm text-violet-800">
+        <div className="card !p-3 bg-violet-50 border border-violet-100 flex flex-wrap items-center gap-2 text-sm text-violet-800">
           <Banknote size={16} />
-          <span>{tenantName(tenantFilter)} 可用預付款餘額 <b className="tnum">{fmtMoney(prepayBalance(tenantFilter), cur)}</b>，可在下方未繳單據按「預付款抵扣」使用。</span>
+          <span className="flex-1 min-w-[180px]">{tenantName(tenantFilter)} 可用預付款餘額 <b className="tnum">{fmtMoney(prepayBalance(tenantFilter), cur)}</b></span>
+          <button
+            className="pill bg-violet-600 text-white hover:bg-violet-700"
+            onClick={() => {
+              const owing = payments
+                .filter((p) => p.tenantCode === tenantFilter && p.status !== "已繳費" && !["預付款", "預付款抵扣"].includes(p.docCategory))
+                .reduce((s, p) => s + Math.max(p.totalAmount - p.paidAmount, 0), 0);
+              if (owing <= 0) { toast("此租客沒有未繳帳單", "info"); return; }
+              if (confirm(`將用預付款餘額由最舊的未繳帳單開始逐張抵扣，最多抵 ${fmtMoney(Math.min(prepayBalance(tenantFilter), owing), cur)}。確定？`))
+                call("payments/offset-all", "POST", { tenantCode: tenantFilter }, "已用預付款抵扣未繳帳單");
+            }}
+          >
+            一鍵抵扣全部未繳
+          </button>
         </div>
       )}
 
