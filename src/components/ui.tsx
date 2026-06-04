@@ -60,9 +60,17 @@ export function Modal({
   wide?: boolean;
 }) {
   useEffect(() => {
-    if (open) document.body.style.overflow = "hidden";
+    if (!open) return;
+    // Lock background scroll WITHOUT a layout shift: compensate for the
+    // scrollbar width that disappears when we set overflow:hidden.
+    const scrollbarW = window.innerWidth - document.documentElement.clientWidth;
+    const prevOverflow = document.body.style.overflow;
+    const prevPad = document.body.style.paddingRight;
+    document.body.style.overflow = "hidden";
+    if (scrollbarW > 0) document.body.style.paddingRight = `${scrollbarW}px`;
     return () => {
-      document.body.style.overflow = "";
+      document.body.style.overflow = prevOverflow;
+      document.body.style.paddingRight = prevPad;
     };
   }, [open]);
 
