@@ -557,6 +557,7 @@ function PaymentsTab({
   const tenants = units.filter((u) => u.tenantCode);
   const [filter, setFilter] = useState("全部");
   const [tenantFilter, setTenantFilter] = useState("全部");
+  const [view, setView] = useState<"bills" | "ledger">("bills");
   const [billModal, setBillModal] = useState(false);
   const [toolsModal, setToolsModal] = useState(false);
   const [partial, setPartial] = useState<Payment | null>(null);
@@ -588,6 +589,17 @@ function PaymentsTab({
         </div>
       </div>
 
+      <div className="inline-flex p-1 bg-slate-100 rounded-xl text-sm">
+        {([["bills", "帳單清單"], ["ledger", "收款明細"]] as const).map(([k, label]) => (
+          <button key={k} onClick={() => setView(k)} className={`px-4 py-1.5 rounded-lg font-medium transition ${view === k ? "bg-white shadow text-indigo-600" : "text-slate-500"}`}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {view === "ledger" && <LedgerView payments={payments} tenants={tenants} cur={cur} />}
+
+      {view === "bills" && (<>
       <div className="flex gap-2 flex-wrap items-center">
         <div className="flex gap-1 flex-wrap">
           {["全部", "未繳費", "部分繳費", "已繳費"].map((f) => (
@@ -661,11 +673,94 @@ function PaymentsTab({
         ))}
         {filtered.length === 0 && <div className="text-center text-slate-400 py-12">沒有符合的單據。</div>}
       </div>
+      </>)}
 
       <BillModal open={billModal} onClose={() => setBillModal(false)} tenants={tenants} cur={cur} call={call} />
       <ToolsModal open={toolsModal} onClose={() => setToolsModal(false)} tenants={tenants} cur={cur} call={call} toast={toast} />
       <PartialModal target={partial} onClose={() => setPartial(null)} call={call} />
       <EditPaymentModal target={editing} onClose={() => setEditing(null)} tenants={tenants} call={call} />
+    </div>
+  );
+}
+
+// 收款明細流水帳 — 所有「實際收到的款項」（排除預付款抵扣以免重複計算）
+function LedgerView({ payments, tenants, cur }: { payments: Payment[]; tenants: Unit[]; cur: string }) {
+  const [lMonth, setLMonth] = useState("全部");
+  const [lTenant, setLTenant] = useState("全部");
+  const tenantName = (code: string) => tenants.find((t) => t.tenantCode === code)?.tenantName || code;
+  const toYM = (d: string) => {
+    const m = (d || "").match(/(\d{4})\D(\d{1,2})/);
+    return m ? `${m[1]}-${m[2].padStart(2, "0")}` : "";
+  };
+  const catBadge = (c: string) =>
+    c === "預付款" ? "badge-indigo" : c === "收據" ? "badge-emerald" : c.includes("退租") ? "badge-amber" : "badge-slate";
+
+  const received = payments.filter((p) => p.paidAmount > 0 && p.docCategory !== "預付款抵扣");
+  const months = Array.from(new Set(received.map((p) => toYM(p.receiptDate || p.createdDate)).filter(Boolean))).sort().reverse();
+
+  const entries = received
+    .map((p) => ({ id: p.id, date: p.receiptDate || p.createdDate || "", tenantCode: p.tenantCode, title: p.title, cat: p.docCategory, amount: p.paidAmount, currency: p.currency }))
+    .filter((e) => lMonth === "全部" || toYM(e.date) === lMonth)
+    .filter((e) => lTenant === "全部" || e.tenantCode === lTenant)
+    .sort((a, b) => toYM(b.date).localeCompare(toYM(a.date)) || (b.date || "").localeCompare(a.date || ""));
+
+  const total = entries.reduce((s, e) => s + e.amount, 0);
+
+  return (
+    <div className="space-y-3">
+      <div className="flex gap-2 flex-wrap items-center">
+        <select className="input md:max-w-[160px] !py-1.5" value={lMonth} onChange={(e) => setLMonth(e.target.value)}>
+          <option value="全部">全部月份</option>
+          {months.map((m) => <option key={m} value={m}>{m}</option>)}
+        </select>
+        <select className="input md:max-w-[200px] !py-1.5" value={lTenant} onChange={(e) => setLTenant(e.target.value)}>
+          <option value="全部">全部租客</option>
+          {tenants.map((t) => <option key={t.id} value={t.tenantCode}>{t.tenantName}（{t.tenantCode}）</option>)}
+        </select>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <Stat label="收款筆數" value={entries.length} valueClass="text-slate-700" />
+        <Stat label="收款合計" value={fmtMoney(total, cur)} valueClass="text-emerald-600" />
+      </div>
+
+      <div className="card !p-0 overflow-x-auto">
+        <table className="w-full text-sm whitespace-nowrap">
+          <thead>
+            <tr className="text-slate-400 text-xs border-b border-slate-100">
+              <th className="text-left px-4 py-2.5 font-medium">收款日期</th>
+              <th className="text-left px-3 py-2.5 font-medium">租客</th>
+              <th className="text-left px-3 py-2.5 font-medium">項目</th>
+              <th className="text-right px-4 py-2.5 font-medium">已收金額</th>
+            </tr>
+          </thead>
+          <tbody>
+            {entries.map((e) => (
+              <tr key={e.id} className="border-b border-slate-50">
+                <td className="px-4 py-2.5 text-slate-600 tnum">{e.date || "—"}</td>
+                <td className="px-3 py-2.5 text-slate-700">{tenantName(e.tenantCode)}</td>
+                <td className="px-3 py-2.5">
+                  <span className={`badge ${catBadge(e.cat)} mr-1.5`}>{e.cat}</span>
+                  <span className="text-slate-700">{e.title}</span>
+                </td>
+                <td className="px-4 py-2.5 text-right font-semibold text-emerald-600 tnum">{fmtMoney(e.amount, e.currency)}</td>
+              </tr>
+            ))}
+            {entries.length === 0 && (
+              <tr><td colSpan={4} className="text-center text-slate-400 py-10">沒有符合的收款記錄。</td></tr>
+            )}
+          </tbody>
+          {entries.length > 0 && (
+            <tfoot>
+              <tr className="border-t border-slate-200 font-bold">
+                <td className="px-4 py-2.5 text-slate-700" colSpan={3}>合計</td>
+                <td className="px-4 py-2.5 text-right text-emerald-700 tnum">{fmtMoney(total, cur)}</td>
+              </tr>
+            </tfoot>
+          )}
+        </table>
+      </div>
+      <p className="text-xs text-slate-500">＊ 顯示所有實際收到的款項（含部分收款、收據、預付款）；「預付款抵扣」為使用既有餘額，不重複計入。</p>
     </div>
   );
 }
