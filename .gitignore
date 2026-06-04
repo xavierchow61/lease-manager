@@ -1,0 +1,20 @@
+node_modules
+.next
+out
+build
+
+# secrets / env
+.env
+.env*.local
+
+# local sqlite (legacy dev db)
+*.db
+*.db-journal
+
+.DS_Store
+*.log
+/uploads
+
+# reference exports of the original Apps Script version (optional to keep)
+# index.html.txt
+# 程式碼.gs.txt

@@ -1,0 +1,1405 @@
+// ==========================================
+// Google Apps Script 後端邏輯 (Code.gs) - SaaS專業版
+// ==========================================
+
+function initSystem() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const requiredSheets = [
+    { name: '系統帳號', headers: ['帳號ID(Email)', '密碼', '姓名', '角色', '權限等級', '建立日期', '關聯租客ID', '需更改密碼', '註冊狀態', '備註'] },
+    { name: '維修記錄', headers: ['記錄ID', '業主ID', '租客ID', '申請日期', '事項描述', '照片連結', '處理狀態', '業主回覆'] },
+    { name: '繳費紀錄', headers: ['記錄ID', '業主ID', '租客ID', '建立日期', '款項期間', '文件類別', '標題項目', '總金額', '已付金額', '收款日期', '繳費狀態', '關聯單據ID', '自動生成', '需發送Email', '貨幣符號'] },
+    { name: '財務支出', headers: ['記錄ID', '業主ID', '日期', '支出項目', '金額', '關聯單位', '備註'] },
+    { name: '訂閱紀錄', headers: ['申請日期', '聯絡信箱', '申請方案', '處理狀態'] }
+  ];
+  
+  let unitSheet = ss.getSheets()[0];
+  if (unitSheet.getName() !== '單位資料' && unitSheet.getName().includes('工作表')) {
+    unitSheet.setName('單位資料');
+    if (unitSheet.getLastColumn() === 0) {
+      unitSheet.appendRow(['業主ID', '租客ID', '租客姓名', '單位地址', '每月租金', '押金', '合約終止日', 'Email', '待辦事項', '合約檔案連結', '水費單價', '電費單價', '本期用水量 (度/噸)', '本期用電量 (度/噸)', '本期水費總額', '本期電費總額']);
+      unitSheet.getRange(1, 1, 1, 16).setFontWeight('bold').setBackground('#f3f4f6');
+    }
+  }
+
+  requiredSheets.forEach(s => {
+    let sheet = ss.getSheetByName(s.name);
+    if (!sheet) {
+      sheet = ss.insertSheet(s.name, ss.getNumSheets());
+      sheet.appendRow(s.headers);
+      sheet.getRange(1, 1, 1, s.headers.length).setFontWeight('bold').setBackground('#f3f4f6');
+    }
+  });
+}
+
+function doGet(e) {
+  // 【低危修復】只在工作表尚未建立時才初始化，避免每次載入都掃描
+  _ensureSystemReady_();
+  return HtmlService.createHtmlOutputFromFile('Index')
+      .setTitle('物業管理系統 Pro')
+      .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL)
+      // 【低危修復】補上手機 viewport meta tag，確保行動裝置正常縮放
+      .addMetaTag('viewport', 'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=0');
+}
+
+// ── Stripe Webhook Handler ───────────────────────────────────────
+// Stripe sends POST events here. GAS cannot read raw headers so we
+// re-verify each event via the Stripe API instead of signature check.
+// Deployment must be: Execute as Me | Who has access: Anyone
+function doPost(e) {
+  var logMsg = '[doPost] start';
+  try {
+    var event = JSON.parse(e.postData.contents);
+    var eventType = event.type;
+    var obj = event.data.object;
+    logMsg += ' | type=' + eventType;
+
+    // Only process relevant subscription/checkout events
+    var handled = [
+      'checkout.session.completed',
+      'customer.subscription.created',
+      'customer.subscription.updated',
+      'customer.subscription.deleted'
+    ];
+    if (handled.indexOf(eventType) === -1) {
+      Logger.log('[doPost] ignored event: ' + eventType);
+      return ContentService.createTextOutput('{"received":true}')
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+
+    var secretKey = PropertiesService.getScriptProperties().getProperty('STRIPE_SECRET_KEY');
+    if (!secretKey) {
+      Logger.log('[doPost] ERROR: STRIPE_SECRET_KEY not set');
+      return ContentService.createTextOutput('{"received":true,"error":"no_key"}')
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+    var authHeader = 'Basic ' + Utilities.base64Encode(secretKey + ':');
+
+    // Resolve customer email — try payload first, then fetch from Stripe customer
+    var email = obj.customer_email || null;
+    var customerId = obj.customer || null;
+    if (!email && customerId) {
+      var custResp = UrlFetchApp.fetch(
+        'https://api.stripe.com/v1/customers/' + customerId,
+        { headers: { 'Authorization': authHeader } }
+      );
+      email = JSON.parse(custResp.getContentText()).email || null;
+    }
+    logMsg += ' | email=' + (email || 'null');
+    Logger.log(logMsg);
+
+    if (!email) {
+      Logger.log('[doPost] skipped: no email found');
+      return ContentService.createTextOutput('{"received":true,"skipped":"no_email"}')
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+
+    var result;
+    if (eventType === 'customer.subscription.deleted') {
+      // Subscription cancelled → downgrade to Free
+      result = serverUpgradeUserTier(email, 'Free');
+      _writeSubscriptionLog_(email, 'Free', '已取消');
+      Logger.log('[doPost] downgraded to Free: ' + JSON.stringify(result));
+    } else if (eventType === 'customer.subscription.updated') {
+      var status = obj.status;
+      if (status === 'active' || status === 'trialing') {
+        result = serverVerifyStripeSubscription(email);
+        Logger.log('[doPost] updated+verify: ' + JSON.stringify(result));
+      } else if (status === 'canceled' || status === 'incomplete_expired') {
+        result = serverUpgradeUserTier(email, 'Free');
+        _writeSubscriptionLog_(email, 'Free', '已取消');
+        Logger.log('[doPost] status=' + status + ' downgraded: ' + JSON.stringify(result));
+      } else {
+        Logger.log('[doPost] subscription.updated status=' + status + ' — no action');
+      }
+    } else {
+      // checkout.session.completed or subscription.created
+      result = serverVerifyStripeSubscription(email);
+      Logger.log('[doPost] checkout verify result: ' + JSON.stringify(result));
+    }
+
+    return ContentService.createTextOutput('{"received":true}')
+      .setMimeType(ContentService.MimeType.JSON);
+  } catch(err) {
+    Logger.log('[doPost] EXCEPTION: ' + err.toString());
+    // Always return 200 — prevents Stripe from endlessly retrying on our errors
+    return ContentService.createTextOutput('{"received":true,"error":"' + err.toString().replace(/"/g, "'") + '"}')
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+// Write a row to 訂閱紀錄 sheet (called internally)
+function _writeSubscriptionLog_(email, plan, status) {
+  try {
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('訂閱紀錄');
+    if (sheet) sheet.appendRow([new Date().toLocaleDateString('zh-TW'), email, plan, status]);
+  } catch(e) { Logger.log('[_writeSubscriptionLog_] ' + e.toString()); }
+}
+
+// ── Manual test: run this function in GAS editor to simulate a webhook ──
+// Change the email to a real account in your 系統帳號 sheet before running.
+function testStripeWebhook() {
+  var testEmail = 'your-test-email@example.com'; // ← change this
+  Logger.log('=== testStripeWebhook START email=' + testEmail + ' ===');
+  var result = serverVerifyStripeSubscription(testEmail);
+  Logger.log('result: ' + JSON.stringify(result));
+  Logger.log('=== testStripeWebhook END ===');
+}
+// ────────────────────────────────────────────────────────────────
+
+// 僅在必要時初始化（檢查關鍵工作表是否存在）
+function _ensureSystemReady_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const needsInit = !ss.getSheetByName('系統帳號') || !ss.getSheetByName('維修記錄') ||
+                    !ss.getSheetByName('繳費紀錄') || !ss.getSheetByName('財務支出');
+  if (needsInit) initSystem();
+}
+
+function getSheetDataByName(sheetName) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+  if (!sheet) return [];
+  const data = sheet.getDataRange().getDisplayValues(); 
+  if (data.length <= 1) return [];
+  
+  const headers = data[0];
+  const records = [];
+  for (let i = 1; i < data.length; i++) {
+    let record = { rowIndex: i + 1 };
+    for (let j = 0; j < headers.length; j++) {
+      record[headers[j]] = data[i][j];
+    }
+    records.push(record);
+  }
+  return records;
+}
+
+// ==========================================
+// 模組：帳號驗證與註冊 (Auth)
+// ==========================================
+
+function serverLogin(role, id, password) {
+  const accounts = getSheetDataByName('系統帳號');
+  const validAccounts = accounts.filter(a => a['註冊狀態'] !== '失敗');
+
+  // 【低危修復】統一對 Email 做 trim + toLowerCase 比對，避免大小寫/空白差異
+  const normalizeEmail = s => (s || '').toString().trim().toLowerCase();
+  const idNorm = normalizeEmail(id);
+
+  if (role === 'admin') {
+    const adminUser = validAccounts.find(a =>
+      normalizeEmail(a['帳號ID(Email)']) === idNorm &&
+      a['密碼'] === password &&
+      a['角色'] === 'admin'
+    );
+    if (adminUser) {
+      return { success: true, user: { role: 'admin', id: adminUser['帳號ID(Email)'], name: adminUser['姓名'], tier: adminUser['權限等級'], currency: adminUser['貨幣符號'] || 'HK$' } };
+    }
+    return { success: false, message: '業主帳號或密碼錯誤' };
+
+  } else if (role === 'tenant') {
+    // 【低危修復】查找租客單位時同樣使用標準化比對
+    const units = getSheetDataByName(SpreadsheetApp.getActiveSpreadsheet().getSheets()[0].getName());
+    const tenantUnit = units.find(r => r['租客ID'] === id || normalizeEmail(r['Email']) === idNorm);
+    const loginEmail = (tenantUnit && tenantUnit['Email']) ? tenantUnit['Email'] : id;
+
+    const tenantUser = validAccounts.find(a =>
+      (normalizeEmail(a['帳號ID(Email)']) === normalizeEmail(loginEmail) ||
+       normalizeEmail(a['帳號ID(Email)']) === idNorm) &&
+      a['密碼'] === password &&
+      a['角色'] === 'tenant'
+    );
+
+    if (tenantUser) {
+      // 首次登入要求改密碼
+      if (tenantUser['需更改密碼'] === '是') {
+        return { success: true, requirePasswordChange: true, tempEmail: tenantUser['帳號ID(Email)'] };
+      }
+      const finalTenantId = tenantUnit ? tenantUnit['租客ID'] : (tenantUser['關聯租客ID'] || tenantUser['帳號ID(Email)']);
+      // 【修復】記錄業主ID，防止不同業主下相同租客ID互相干擾
+      const ownerId = tenantUnit ? tenantUnit['業主ID'] : '';
+      // 【修復】從業主帳號取得貨幣設定，確保租客版面與業主記錄一致
+      const ownerAccount = validAccounts.find(a => a['帳號ID(Email)'] === ownerId && a['角色'] === 'admin');
+      const tenantCurrency = ownerAccount ? (ownerAccount['貨幣符號'] || 'HK$') : 'HK$';
+      return { success: true, user: { role: 'tenant', id: finalTenantId, name: tenantUser['姓名'], ownerId: ownerId, currency: tenantCurrency } };
+    }
+
+    // 【🔴 高危修復】已移除「無密碼即可登入」的安全漏洞，強制所有登入必須驗證密碼
+    return { success: false, message: '租客 ID / Email 或密碼錯誤' };
+  }
+  return { success: false, message: '未知的角色' };
+}
+
+function serverRegister(email, name, password, currency) {
+  // 僅供業主註冊
+  const accountSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('系統帳號');
+  const accounts = getSheetDataByName('系統帳號');
+  const today = new Date().toLocaleString('zh-TW');
+  let headers = accountSheet.getRange(1, 1, 1, accountSheet.getLastColumn()).getValues()[0];
+
+  if (accounts.some(a => a['帳號ID(Email)'] === email && a['註冊狀態'] !== '失敗')) {
+    return { success: false, message: '此 Email 已經註冊過囉！' };
+  }
+
+  // 確保 貨幣符號 欄位存在
+  if (!headers.includes('貨幣符號')) {
+    accountSheet.insertColumnAfter(headers.length);
+    accountSheet.getRange(1, headers.length + 1).setValue('貨幣符號');
+    headers.push('貨幣符號');
+  }
+
+  const rowData = headers.map(h => {
+    if (h === '帳號ID(Email)') return email;
+    if (h === '密碼') return password;
+    if (h === '姓名') return name;
+    if (h === '角色') return 'admin';
+    if (h === '權限等級') return 'Free';
+    if (h === '建立日期') return today;
+    if (h === '註冊狀態') return '成功';
+    if (h === '備註') return '業主自行註冊';
+    if (h === '貨幣符號') return currency || 'HK$';
+    return "";
+  });
+
+  accountSheet.appendRow(rowData);
+  return { success: true };
+}
+
+function serverChangePassword(email, newPassword) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('系統帳號');
+  const data = sheet.getDataRange().getValues();
+  if (data.length <= 1) return { success: false, message: '系統帳號表為空' };
+  
+  const headers = data[0];
+  const emailColIndex = headers.indexOf('帳號ID(Email)');
+  const pwdColIndex = headers.indexOf('密碼');
+  const reqChangeColIndex = headers.indexOf('需更改密碼');
+  
+  if (emailColIndex === -1 || pwdColIndex === -1) return { success: false, message: '找不到對應欄位' };
+  
+  // 強化比對：把前後空白都去除，並轉小寫，防止輸入錯誤
+  const targetEmail = email.toString().trim().toLowerCase();
+
+  for (let i = 1; i < data.length; i++) {
+    const rowEmail = data[i][emailColIndex].toString().trim().toLowerCase();
+    
+    if (rowEmail === targetEmail) {
+      // 寫入新密碼
+      sheet.getRange(i + 1, pwdColIndex + 1).setValue(newPassword);
+      
+      // 解除「需更改密碼」標記
+      if (reqChangeColIndex !== -1) {
+         sheet.getRange(i + 1, reqChangeColIndex + 1).setValue('否');
+      }
+      return { success: true };
+    }
+  }
+  return { success: false, message: '找不到該帳號，無法更新密碼' };
+}
+
+function serverForgotPassword(email) {
+  try {
+    const normalizeEmail = s => (s || '').toString().trim().toLowerCase();
+    const accounts = getSheetDataByName('系統帳號');
+    const user = accounts.find(a => normalizeEmail(a['帳號ID(Email)']) === normalizeEmail(email));
+    if (user) {
+      // 【🔴 高危修復】不再明文寄出密碼；改為產生臨時密碼，寫入帳號表並標記需更改密碼
+      const tempPw = Math.random().toString(36).slice(-8) + Math.random().toString(36).slice(-4).toUpperCase();
+      // 將臨時密碼寫回試算表，並標記首次登入需重設
+      const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('系統帳號');
+      const data = sheet.getDataRange().getValues();
+      const headers = data[0];
+      const emailCol = headers.indexOf('帳號ID(Email)');
+      const pwdCol   = headers.indexOf('密碼');
+      const reqCol   = headers.indexOf('需更改密碼');
+      for (let i = 1; i < data.length; i++) {
+        if (normalizeEmail(data[i][emailCol]) === normalizeEmail(email)) {
+          sheet.getRange(i + 1, pwdCol + 1).setValue(tempPw);
+          if (reqCol !== -1) sheet.getRange(i + 1, reqCol + 1).setValue('是');
+          break;
+        }
+      }
+      const subject = `[物業管理系統] 密碼重設通知`;
+      const body = `親愛的 ${user['姓名']} 您好：\n\n` +
+        `您申請了密碼重設。以下是您的臨時密碼：\n\n` +
+        `臨時密碼：${tempPw}\n\n` +
+        `請使用此臨時密碼登入系統，登入後系統將立即要求您設定新的密碼。\n` +
+        `若非本人操作，請忽略此郵件，您的帳號仍然安全。\n\n` +
+        `-- 系統自動發送 --`;
+      MailApp.sendEmail(email, subject, body);
+      return { success: true };
+    }
+    return { success: false, message: '找不到此信箱對應的帳號' };
+  } catch (e) {
+    return { success: false, message: '發送失敗，請確認您已在後台授權 MailApp 權限。' };
+  }
+}
+
+// ==========================================
+// 模組：資料獲取與權限隔離
+// ==========================================
+
+function serverGetAllData(user) {
+  const unitSheetName = SpreadsheetApp.getActiveSpreadsheet().getSheets()[0].getName();
+  const allUnits = getSheetDataByName(unitSheetName);
+  const allRepairs = getSheetDataByName('維修記錄');
+  const allPayments = getSheetDataByName('繳費紀錄');
+  const allExpenses = getSheetDataByName('財務支出');
+  
+  if (user.role === 'admin') {
+    return { 
+      units: allUnits.filter(r => r['業主ID'] === user.id), 
+      repairs: allRepairs.filter(r => r['業主ID'] === user.id), 
+      payments: allPayments.filter(r => r['業主ID'] === user.id), 
+      expenses: allExpenses.filter(r => r['業主ID'] === user.id) 
+    };
+  } else if (user.role === 'tenant') {
+    // 【修復】同時以 業主ID 過濾，避免不同業主下相同租客ID互相干擾
+    const myUnits = allUnits.filter(r =>
+      (r['租客ID'] === user.id || r['Email'] === user.id) &&
+      (!user.ownerId || r['業主ID'] === user.ownerId)
+    );
+    const myTenantIds = myUnits.map(u => u['租客ID']);
+    return {
+      units: myUnits,
+      repairs: allRepairs.filter(r => myTenantIds.includes(r['租客ID']) && (!user.ownerId || r['業主ID'] === user.ownerId)),
+      payments: allPayments.filter(r => myTenantIds.includes(r['租客ID']) && (!user.ownerId || r['業主ID'] === user.ownerId)),
+      expenses: []
+    };
+  }
+  return { units: [], repairs: [], payments: [], expenses: [] };
+}
+
+// ==========================================
+// 模組：單位資料管理與租客建檔
+// ==========================================
+
+function serverUpdateUnitData(updatedRecord) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheets()[0];
+  let headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  if (!updatedRecord.rowIndex) return { success: false, message: '找不到對應的資料行' };
+  Object.keys(updatedRecord).forEach(key => {
+    if (key !== 'rowIndex' && !headers.includes(key)) {
+      sheet.insertColumnAfter(headers.length);
+      sheet.getRange(1, headers.length + 1).setValue(key);
+      headers.push(key);
+    }
+  });
+  const rowData = headers.map(header => updatedRecord[header] !== undefined ? updatedRecord[header] : "");
+  sheet.getRange(updatedRecord.rowIndex, 1, 1, rowData.length).setValues([rowData]);
+
+  // Auto-create tenant account if Email was newly added to an existing unit
+  if (updatedRecord['Email'] && updatedRecord['Email'].includes('@')) {
+    const accountSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('系統帳號');
+    const existingAccounts = getSheetDataByName('系統帳號');
+    const normalizeEmail = s => (s || '').toString().trim().toLowerCase();
+    if (!existingAccounts.some(a => normalizeEmail(a['帳號ID(Email)']) === normalizeEmail(updatedRecord['Email']) && a['註冊狀態'] !== '失敗')) {
+      let accHeaders = accountSheet.getRange(1, 1, 1, accountSheet.getLastColumn()).getValues()[0];
+      const addAccHeader = (colName) => {
+        if (!accHeaders.includes(colName)) {
+          accountSheet.insertColumnAfter(accHeaders.length);
+          accountSheet.getRange(1, accHeaders.length + 1).setValue(colName);
+          accHeaders.push(colName);
+        }
+      };
+      addAccHeader('關聯租客ID');
+      addAccHeader('需更改密碼');
+      addAccHeader('註冊狀態');
+      addAccHeader('備註');
+
+      const autoPassword = Math.random().toString(36).slice(-6);
+      const today = new Date().toLocaleDateString('zh-TW');
+      const accRowData = accHeaders.map(h => {
+        if (h === '帳號ID(Email)') return updatedRecord['Email'];
+        if (h === '密碼') return autoPassword;
+        if (h === '姓名') return updatedRecord['租客姓名'];
+        if (h === '角色') return 'tenant';
+        if (h === '權限等級') return 'Basic';
+        if (h === '建立日期') return today;
+        if (h === '關聯租客ID') return updatedRecord['租客ID'];
+        if (h === '需更改密碼') return '是';
+        if (h === '註冊狀態') return '成功';
+        if (h === '備註') return '業主編輯自動生成';
+        return "";
+      });
+      accountSheet.appendRow(accRowData);
+
+      try {
+        const subject = `[物業系統通知] 您的專屬租客帳號已開通`;
+        let body = `親愛的 ${updatedRecord['租客姓名']} 您好：\n\n`;
+        body += `您的業主已為您在物業管理系統中建立專屬檔案。\n`;
+        body += `系統已為您自動生成登入帳號與初始密碼：\n\n`;
+        body += `👉 登入/聯絡信箱：${updatedRecord['Email']}\n`;
+        body += `👉 專屬租客ID：${updatedRecord['租客ID']}\n`;
+        body += `👉 初始密碼：${autoPassword}\n\n`;
+        body += `請使用上述資訊登入系統。為了您的帳號安全，首次登入時系統將會要求您設定新的密碼。\n`;
+        body += `感謝您的配合！\n\n-- 系統自動發送 --`;
+        MailApp.sendEmail(updatedRecord['Email'], subject, body);
+      } catch (e) { console.error("發信失敗:", e.toString()); }
+    }
+  }
+
+  return { success: true };
+}
+
+function serverAddUnit(data) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheets()[0];
+  let headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  if (!data['業主ID']) return { success: false, message: '錯誤：無法辨識業主身分' };
+
+  Object.keys(data).forEach(key => {
+    if (!headers.includes(key)) {
+      sheet.insertColumnAfter(headers.length);
+      sheet.getRange(1, headers.length + 1).setValue(key);
+      headers.push(key);
+    }
+  });
+
+  const rowData = headers.map(header => data[header] !== undefined ? data[header] : "");
+  sheet.appendRow(rowData);
+  
+  if (data['Email'] && data['Email'].includes('@')) {
+    const accountSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('系統帳號');
+    let accHeaders = accountSheet.getRange(1, 1, 1, accountSheet.getLastColumn()).getValues()[0];
+
+    // 【🟡 低危修復】新增前檢查 Email 是否已有對應帳號，避免重複建立
+    const existingAccounts = getSheetDataByName('系統帳號');
+    const normalizeEmail = s => (s || '').toString().trim().toLowerCase();
+    if (existingAccounts.some(a => normalizeEmail(a['帳號ID(Email)']) === normalizeEmail(data['Email']) && a['註冊狀態'] !== '失敗')) {
+      // Email 已存在，跳過自動建帳號（單位資料仍正常新增）
+      return { success: true };
+    }
+    
+    const addAccHeader = (colName) => {
+      if (!accHeaders.includes(colName)) {
+        accountSheet.insertColumnAfter(accHeaders.length);
+        accountSheet.getRange(1, accHeaders.length + 1).setValue(colName);
+        accHeaders.push(colName);
+      }
+    };
+    addAccHeader('關聯租客ID');
+    addAccHeader('需更改密碼');
+    addAccHeader('註冊狀態');
+    addAccHeader('備註');
+
+    const autoPassword = Math.random().toString(36).slice(-6);
+    const today = new Date().toLocaleDateString('zh-TW');
+
+    const accRowData = accHeaders.map(h => {
+      if (h === '帳號ID(Email)') return data['Email'];
+      if (h === '密碼') return autoPassword;
+      if (h === '姓名') return data['租客姓名'];
+      if (h === '角色') return 'tenant';
+      if (h === '權限等級') return 'Basic';
+      if (h === '建立日期') return today;
+      if (h === '關聯租客ID') return data['租客ID'];
+      if (h === '需更改密碼') return '是'; 
+      if (h === '註冊狀態') return '成功';
+      if (h === '備註') return '業主建檔自動生成';
+      return ""; 
+    });
+    accountSheet.appendRow(accRowData);
+    
+    try {
+      const subject = `[物業系統通知] 您的專屬租客帳號已開通`;
+      let body = `親愛的 ${data['租客姓名']} 您好：\n\n`;
+      body += `您的業主已為您在物業管理系統中建立專屬檔案。\n`;
+      body += `系統已為您自動生成登入帳號與初始密碼：\n\n`;
+      body += `👉 登入/聯絡信箱：${data['Email']}\n`;
+      body += `👉 專屬租客ID：${data['租客ID']}\n`;
+      body += `👉 初始密碼：${autoPassword}\n\n`;
+      body += `請使用上述資訊登入系統。為了您的帳號安全，首次登入時系統將會要求您設定新的密碼。\n`;
+      body += `感謝您的配合！\n\n-- 系統自動發送 --`;
+      MailApp.sendEmail(data['Email'], subject, body);
+    } catch (e) { console.error("發信失敗:", e.toString()); }
+  }
+  return { success: true };
+}
+
+function serverUploadFile(userId, filename, base64Data, type) {
+  try {
+    const folderName = "物業系統附件庫";
+    let folderIter = DriveApp.getFoldersByName(folderName);
+    let folder = folderIter.hasNext() ? folderIter.next() : DriveApp.createFolder(folderName);
+    const prefix = type === 'contract' ? `合約_${userId}_` : `維修_${userId}_`;
+    const blob = Utilities.newBlob(Utilities.base64Decode(base64Data), "application/octet-stream", prefix + filename);
+    const file = folder.createFile(blob);
+    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    return { success: true, url: file.getUrl() };
+  } catch (e) { return { success: false, message: e.toString() }; }
+}
+
+// ==========================================
+// 模組：維修管理
+// ==========================================
+
+function serverAddRepair(payload) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var repairSheet = ss.getSheetByName("維修記錄"); 
+    if (!repairSheet) return { success: false, message: '找不到維修記錄工作表' };
+
+    // --- 💡 關鍵修復：自動尋找該租客對應的業主 ID ---
+    var ownerId = "";
+    var unitSheetName = ss.getSheets()[0].getName(); // 抓取第一個分頁 (通常是單位資料)
+    var unitData = getSheetDataByName(unitSheetName);
+    
+    // 從單位資料中比對租客ID，找出是哪個業主的
+    var unit = unitData.find(function(u) { return u['租客ID'] === payload['租客ID']; });
+    if (unit && unit['業主ID']) {
+       ownerId = unit['業主ID'];
+    }
+    // --------------------------------------------
+
+    var newId = "REP" + new Date().getTime();
+    var imageUrl = "";
+
+    // 【🟠 中危修復】照片上傳邏輯現已補全，呼叫 serverUploadFile 儲存照片至 Google Drive
+    if (payload['照片Base64'] && payload['照片檔名']) {
+      var uploadResult = serverUploadFile(payload['租客ID'], payload['照片檔名'], payload['照片Base64'], 'repair');
+      if (uploadResult.success) {
+        imageUrl = uploadResult.url;
+      }
+    }
+
+    // 依照您的試算表欄位順序寫入：
+    var newRow = [
+      newId,                             // 記錄ID
+      ownerId,                           // 業主ID (現在會自動填入了！)
+      payload['租客ID'],                 // 租客ID
+      payload['申請日期'],               // 申請日期
+      payload['事項描述'],               // 事項描述
+      imageUrl,                          // 照片連結
+      payload['處理狀態'] || "處理中",    // 處理狀態
+      ""                                 // 業主回覆
+    ];
+
+    repairSheet.appendRow(newRow);
+
+    return { success: true, message: '報修成功' };
+  } catch (e) {
+    return { success: false, message: '系統錯誤: ' + e.toString() };
+  }
+}
+// ==========================================
+// 模組：帳單收據
+// ==========================================
+
+function _getNextDocNumber_(ownerId) {
+  const year = new Date().getFullYear();
+  const prefix = 'INV-' + year + '-';
+  try {
+    const payments = getSheetDataByName('繳費紀錄');
+    let maxNum = 0;
+    payments.forEach(function(p) {
+      if (p['業主ID'] === ownerId && p['發票號碼'] && String(p['發票號碼']).startsWith(prefix)) {
+        const n = parseInt(String(p['發票號碼']).split('-')[2]) || 0;
+        if (n > maxNum) maxNum = n;
+      }
+    });
+    return prefix + String(maxNum + 1).padStart(4, '0');
+  } catch(e) { return prefix + '0001'; }
+}
+
+function serverAddPayment(data) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('繳費紀錄');
+  let headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  // Auto-assign sequential invoice number
+  if (!data['發票號碼']) data['發票號碼'] = _getNextDocNumber_(data['業主ID']);
+  Object.keys(data).forEach(key => {
+    if (!headers.includes(key)) {
+      sheet.insertColumnAfter(headers.length);
+      sheet.getRange(1, headers.length + 1).setValue(key);
+      headers.push(key);
+    }
+  });
+  const rowData = headers.map(header => data[header] !== undefined ? data[header] : "");
+  sheet.appendRow(rowData);
+  
+  if (data['需發送Email'] === '是') {
+    try {
+      const firstSheetName = SpreadsheetApp.getActiveSpreadsheet().getSheets()[0].getName();
+      const units = getSheetDataByName(firstSheetName);
+      const tenant = units.find(u => u['租客ID'] === data['租客ID'] && u['業主ID'] === data['業主ID']);
+      
+      if (tenant && tenant['Email']) {
+         const isReceipt = data['文件類別'] === '收據';
+         const currency = data['貨幣符號'] || '¥';
+         const subject = isReceipt ? `[物業系統通知] 收款確認：${data['標題項目']}` : `[物業系統通知] 您有一張新的單據：${data['標題項目']}`;
+         let body = `親愛的 ${tenant['租客姓名']} 您好：\n\n`;
+         if (isReceipt) {
+            body += `系統已確認收到您的款項（單據編號：${data['記錄ID']}）。\n本次實收金額為：${currency} ${data['已付金額']}\n\n感謝您的繳納！\n\n`;
+         } else {
+            body += `系統已為您開立新的單據（編號：${data['記錄ID']}）。\n本單據應繳總額為：${currency} ${data['總金額']}\n\n請登入系統查看詳細明細並儘速繳納，感謝您的配合！\n\n`;
+         }
+         body += `-- 系統自動產生 --`;
+         MailApp.sendEmail(tenant['Email'], subject, body);
+      }
+    } catch(e) { console.error("Email send failed: " + e.toString()); }
+  }
+  return { success: true };
+}
+
+function serverUpdatePaymentStatus(rowIndex, newStatus) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('繳費紀錄');
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const statusIndex = headers.indexOf('繳費狀態') + 1;
+  const paidIndex   = headers.indexOf('已付金額')  + 1;
+  const totalIndex  = headers.indexOf('總金額')    + 1;
+  const dateIndex   = headers.indexOf('收款日期')  + 1;
+  if (statusIndex > 0 && rowIndex) {
+    sheet.getRange(rowIndex, statusIndex).setValue(newStatus);
+    // 標記已繳費時自動補填已付金額 = 總金額
+    if (newStatus === '已繳費' && paidIndex > 0 && totalIndex > 0) {
+      const total = sheet.getRange(rowIndex, totalIndex).getValue();
+      const existing = sheet.getRange(rowIndex, paidIndex).getValue();
+      if (!existing || parseFloat(existing) === 0) {
+        sheet.getRange(rowIndex, paidIndex).setValue(total);
+      }
+      if (dateIndex > 0) {
+        const existingDate = sheet.getRange(rowIndex, dateIndex).getValue();
+        if (!existingDate) {
+          sheet.getRange(rowIndex, dateIndex).setValue(new Date().toLocaleDateString('zh-TW'));
+        }
+      }
+    }
+  }
+  return { success: true };
+}
+
+function serverDeletePayment(rowIndex) {
+  if(!rowIndex) return { success: false };
+  SpreadsheetApp.getActiveSpreadsheet().getSheetByName('繳費紀錄').deleteRow(rowIndex);
+  return { success: true };
+}
+
+function serverRecordPartialPayment(rowIndex, paidAmount, paidDate) {
+  try {
+    const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('繳費紀錄');
+    if (!sheet || !rowIndex) return { success: false, message: '找不到記錄' };
+    const data = sheet.getDataRange().getValues();
+    const headers = data[0];
+    const totalCol   = headers.indexOf('總金額')   + 1;
+    const paidCol    = headers.indexOf('已付金額')  + 1;
+    const dateCol    = headers.indexOf('收款日期')  + 1;
+    const statusCol  = headers.indexOf('繳費狀態')  + 1;
+    if (!totalCol || !paidCol || !statusCol) return { success: false, message: '找不到必要欄位' };
+    const totalAmount = parseFloat(data[rowIndex - 1][totalCol - 1]) || 0;
+    // 【Bug 2修復】累加已付金額，不覆蓋舊記錄
+    const existingPaid = parseFloat(data[rowIndex - 1][paidCol - 1]) || 0;
+    const newPaid = existingPaid + (parseFloat(paidAmount) || 0);
+    const newStatus = newPaid >= totalAmount ? '已繳費' : newPaid > 0 ? '部分繳費' : '未繳費';
+    sheet.getRange(rowIndex, paidCol).setValue(newPaid);
+    if (dateCol) sheet.getRange(rowIndex, dateCol).setValue(paidDate || new Date().toLocaleDateString('zh-TW'));
+    sheet.getRange(rowIndex, statusCol).setValue(newStatus);
+    return { success: true };
+  } catch (e) {
+    return { success: false, message: e.toString() };
+  }
+}
+
+// ==========================================
+// 模組：財務收支與訂閱升級
+// ==========================================
+
+function serverAddExpense(data) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('財務支出');
+  const id = "EXP" + new Date().getTime();
+  sheet.appendRow([id, data['業主ID'], data['日期'], data['支出項目'], data['金額'], data['關聯單位'], data['備註']]);
+  return { success: true };
+}
+
+function serverNotifySubscription(contactEmail, planName) {
+  try {
+    const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('訂閱紀錄');
+    const date = new Date().toLocaleDateString('zh-TW');
+    sheet.appendRow([date, contactEmail, planName || 'Pro', '待聯絡']);
+    const ownerEmail = Session.getEffectiveUser().getEmail(); 
+    if (ownerEmail) {
+      const subject = `【SaaS 系統通知】有客戶想訂閱 ${planName} 方案！`;
+      let body = `系統管理員您好：\n\n剛剛有用戶點擊了升級按鈕。\n用戶信箱：${contactEmail}\n申請方案：${planName}\n資料已同步，請盡快聯繫。`;
+      MailApp.sendEmail(ownerEmail, subject, body);
+    }
+    return { success: true };
+  } catch(e) { return { success: false, message: e.toString() }; }
+}
+
+function serverUpgradeUserTier(email, tier) {
+  const validTiers = ['Free', 'Pro', 'Max'];
+  const newTier = validTiers.includes(tier) ? tier : 'Pro';
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('系統帳號');
+  const data = sheet.getDataRange().getValues();
+  if (data.length <= 1) return { success: false, message: '系統帳號表為空' };
+  const headers = data[0];
+  const emailColIndex = headers.indexOf('帳號ID(Email)');
+  const tierColIndex = headers.indexOf('權限等級');
+  if (emailColIndex === -1 || tierColIndex === -1) return { success: false, message: '找不到對應欄位' };
+  for (let i = 1; i < data.length; i++) {
+    if (data[i][emailColIndex] === email) {
+      sheet.getRange(i + 1, tierColIndex + 1).setValue(newTier);
+      return { success: true, tier: newTier };
+    }
+  }
+  return { success: false, message: '找不到該帳號' };
+}
+function serverUpdateRepair(recordId, status, reply) {
+  try {
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("維修記錄");
+    if (!sheet) return { success: false, message: '找不到維修工作表' };
+
+    var data = sheet.getDataRange().getValues();
+    var headers = data[0];
+
+    // 【🟠 中危修復】改用動態欄位查找，不再依賴硬編碼索引（7、8）
+    var idColIndex     = headers.indexOf('記錄ID');
+    var statusColIndex = headers.indexOf('處理狀態');
+    var replyColIndex  = headers.indexOf('業主回覆');
+
+    if (idColIndex === -1 || statusColIndex === -1 || replyColIndex === -1) {
+      return { success: false, message: '找不到必要欄位（記錄ID / 處理狀態 / 業主回覆）' };
+    }
+
+    var tenantIdColIndex = headers.indexOf('租客ID');
+    var tenantId = '';
+    for (var i = 1; i < data.length; i++) {
+      if (data[i][idColIndex] === recordId) {
+        tenantId = tenantIdColIndex !== -1 ? data[i][tenantIdColIndex] : '';
+        sheet.getRange(i + 1, statusColIndex + 1).setValue(status);
+        sheet.getRange(i + 1, replyColIndex  + 1).setValue(reply);
+
+        // 【Feature 9】維修狀態變更時，Email 通知租客
+        if (tenantId) {
+          try {
+            var unitSheetName = SpreadsheetApp.getActiveSpreadsheet().getSheets()[0].getName();
+            var units = getSheetDataByName(unitSheetName);
+            var unit = units.find(function(u) { return u['租客ID'] === tenantId; });
+            if (unit && unit['Email']) {
+              var statusLabel = status === '完成' ? '✅ 已完成' : status === '已安排' ? '🔧 已安排維修' : '🔄 處理中';
+              var subject = '[物業系統通知] 您的維修申請狀態已更新';
+              var emailBody = '親愛的 ' + (unit['租客姓名'] || '') + ' 您好：\n\n' +
+                '您的維修申請狀態已更新為：' + statusLabel + '\n\n' +
+                (reply ? '業主回覆：' + reply + '\n\n' : '') +
+                '如有疑問，請直接聯絡您的業主。\n\n-- 物業管理系統自動發送 --';
+              MailApp.sendEmail(unit['Email'], subject, emailBody);
+            }
+          } catch(emailErr) { console.error('維修通知信發送失敗:', emailErr.toString()); }
+        }
+        return { success: true, message: '更新成功' };
+      }
+    }
+    return { success: false, message: '找不到該筆維修紀錄' };
+  } catch (e) {
+    return { success: false, message: '系統錯誤: ' + e.toString() };
+  }
+}
+
+// ==========================================
+// 模組：批量帳單生成
+// ==========================================
+
+function serverGenerateMonthlyRentBills(ownerId) {
+  try {
+    const now = new Date();
+    const monthStr = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0');
+    const displayMonth = now.getFullYear() + '年' + (now.getMonth() + 1) + '月';
+    const unitSheetName = SpreadsheetApp.getActiveSpreadsheet().getSheets()[0].getName();
+    const units = getSheetDataByName(unitSheetName).filter(u =>
+      u['業主ID'] === ownerId && u['租客姓名'] && parseFloat(u['每月租金']) > 0
+    );
+    const paySheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('繳費紀錄');
+    const existingPayments = getSheetDataByName('繳費紀錄');
+    let headers = paySheet.getRange(1, 1, 1, paySheet.getLastColumn()).getValues()[0];
+    let created = 0, skipped = 0;
+
+    units.forEach(unit => {
+      const alreadyExists = existingPayments.some(p =>
+        p['業主ID'] === ownerId && p['租客ID'] === unit['租客ID'] &&
+        p['款項期間'] === monthStr && (p['標題項目'] || '').indexOf('租金') !== -1
+      );
+      if (alreadyExists) { skipped++; return; }
+      const data = {
+        '記錄ID':   'PAY' + new Date().getTime() + Math.random().toString(36).slice(-4),
+        '業主ID':   ownerId, '租客ID': unit['租客ID'],
+        '建立日期': now.toLocaleDateString('zh-TW'), '款項期間': monthStr,
+        '文件類別': '帳單', '標題項目': displayMonth + '租金',
+        '總金額':   unit['每月租金'], '已付金額': '', '收款日期': '',
+        '繳費狀態': '未繳費', '關聯單據ID': '', '自動生成': '是',
+        '需發送Email': '否', '貨幣符號': '¥'
+      };
+      paySheet.appendRow(headers.map(h => data[h] !== undefined ? data[h] : ''));
+      created++;
+      Utilities.sleep(50); // avoid timestamp collision
+    });
+    return { success: true, created: created, skipped: skipped };
+  } catch (e) { return { success: false, message: e.toString() }; }
+}
+
+function serverGenerateUtilityBills(ownerId, billsData) {
+  // billsData: [{tenantId, waterUsage, electricUsage, waterRate, electricRate, currency}]
+  try {
+    const paySheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('繳費紀錄');
+    let headers = paySheet.getRange(1, 1, 1, paySheet.getLastColumn()).getValues()[0];
+    const now = new Date();
+    const monthStr = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0');
+    const displayMonth = now.getFullYear() + '年' + (now.getMonth() + 1) + '月';
+    let created = 0;
+    billsData.forEach(function(u) {
+      const waterAmt = (parseFloat(u.waterUsage) || 0) * (parseFloat(u.waterRate) || 0);
+      const elecAmt  = (parseFloat(u.electricUsage) || 0) * (parseFloat(u.electricRate) || 0);
+      const total = waterAmt + elecAmt;
+      if (total <= 0) return;
+      const data = {
+        '記錄ID':   'PAY' + new Date().getTime() + Math.random().toString(36).slice(-4),
+        '業主ID':   ownerId, '租客ID': u.tenantId,
+        '建立日期': now.toLocaleDateString('zh-TW'), '款項期間': monthStr,
+        '文件類別': '帳單',
+        '標題項目': displayMonth + '水電費（水:' + parseFloat(u.waterUsage).toFixed(1) + '噸 電:' + parseFloat(u.electricUsage).toFixed(1) + '度）',
+        '總金額':   Math.round(total), '已付金額': '', '收款日期': '',
+        '繳費狀態': '未繳費', '關聯單據ID': '', '自動生成': '是',
+        '需發送Email': '否', '貨幣符號': u.currency || '¥'
+      };
+      paySheet.appendRow(headers.map(h => data[h] !== undefined ? data[h] : ''));
+      created++;
+      Utilities.sleep(50);
+    });
+    return { success: true, created: created };
+  } catch (e) { return { success: false, message: e.toString() }; }
+}
+
+function serverAddPrepayment(ownerId, tenantId, amount, date, remark, currency) {
+  try {
+    const now = new Date();
+    const displayDate = date || now.toLocaleDateString('zh-TW');
+    const data = {
+      '記錄ID':      'PRE' + now.getTime() + Math.random().toString(36).slice(-4),
+      '業主ID':      ownerId,
+      '租客ID':      tenantId,
+      '建立日期':    now.toLocaleDateString('zh-TW'),
+      '款項期間':    now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0'),
+      '文件類別':    '預付款',
+      '標題項目':    (remark || '預付款') + '（' + displayDate + '）',
+      '總金額':      parseFloat(amount) || 0,
+      '已付金額':    parseFloat(amount) || 0,
+      '收款日期':    displayDate,
+      '繳費狀態':    '已繳費',
+      '關聯單據ID':  '',
+      '自動生成':    '否',
+      '需發送Email': '否',
+      '貨幣符號':    currency || '¥'
+    };
+    return serverAddPayment(data);
+  } catch (e) { return { success: false, message: e.toString() }; }
+}
+
+function serverSendExpiryReminders(ownerId) {
+  try {
+    const unitSheetName = SpreadsheetApp.getActiveSpreadsheet().getSheets()[0].getName();
+    const units = getSheetDataByName(unitSheetName).filter(u => u['業主ID'] === ownerId && u['合約終止日'] && u['Email']);
+    const today = new Date(); today.setHours(0,0,0,0);
+    let sent = 0, expiring = [];
+    units.forEach(unit => {
+      const parts = (unit['合約終止日'] || '').split(/[-\/]/);
+      if (parts.length < 3) return;
+      const expiry = new Date(parseInt(parts[0]), parseInt(parts[1])-1, parseInt(parts[2]));
+      if (isNaN(expiry.getTime())) return;
+      const daysLeft = Math.ceil((expiry - today) / 86400000);
+      if (daysLeft < 0 || daysLeft > 60) return;
+      expiring.push({ name: unit['租客姓名'], days: daysLeft, address: unit['單位地址'] });
+      const urgency = daysLeft <= 7 ? '⚠️ 緊急' : daysLeft <= 14 ? '🔔 重要' : '📅 提醒';
+      try {
+        MailApp.sendEmail(unit['Email'],
+          urgency + ' 合約到期提醒：您的租約將於 ' + daysLeft + ' 天後到期',
+          '親愛的 ' + unit['租客姓名'] + ' 您好：\n\n' +
+          '您位於「' + unit['單位地址'] + '」的租約將於 ' + unit['合約終止日'] + ' 到期（還有 ' + daysLeft + ' 天）。\n\n' +
+          '如需續約，請盡快與業主聯繫商議。\n\n-- 物業管理系統自動發送 --'
+        );
+        sent++;
+      } catch(e) { console.error('發信失敗:', e.toString()); }
+    });
+    return { success: true, sent: sent, expiring: expiring };
+  } catch (e) { return { success: false, message: e.toString() }; }
+}
+
+// ==========================================
+// 模組：押金收據 & 退租結算
+// ==========================================
+
+function serverGenerateDepositReceipt(ownerId, tenantId, receiptDate, docType) {
+  // docType: '收據'（已繳費）or '帳單'（未繳費發票）
+  try {
+    const unitSheetName = SpreadsheetApp.getActiveSpreadsheet().getSheets()[0].getName();
+    const units = getSheetDataByName(unitSheetName);
+    const unit = units.find(function(u) { return u['業主ID'] === ownerId && u['租客ID'] === tenantId; });
+    if (!unit) return { success: false, message: '找不到租客資料' };
+
+    const deposit = parseFloat(unit['押金']) || 0;
+    if (deposit <= 0) return { success: false, message: '該單位未設定押金金額，請先在單位資料填寫押金' };
+
+    const isInvoice = docType === '帳單';
+    const now = new Date();
+    const monthStr = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0');
+    const data = {
+      '記錄ID':      'PAY' + now.getTime() + Math.random().toString(36).slice(-4),
+      '業主ID':      ownerId,
+      '租客ID':      tenantId,
+      '建立日期':    now.toLocaleDateString('zh-TW'),
+      '款項期間':    monthStr,
+      '文件類別':    isInvoice ? '帳單' : '收據',
+      '標題項目':    (unit['租客姓名'] ? unit['租客姓名'] + ' — ' : '') + (isInvoice ? '押金發票' : '押金收據'),
+      '總金額':      deposit,
+      '已付金額':    isInvoice ? '' : deposit,
+      '收款日期':    isInvoice ? '' : (receiptDate || now.toLocaleDateString('zh-TW')),
+      '繳費狀態':    isInvoice ? '未繳費' : '已繳費',
+      '關聯單據ID':  '',
+      '自動生成':    '否',
+      '需發送Email': '否',
+      '貨幣符號':    unit['貨幣符號'] || '¥'
+    };
+    return serverAddPayment(data);
+  } catch (e) { return { success: false, message: e.toString() }; }
+}
+
+function serverGenerateLeaseTermination(ownerId, formData) {
+  // formData: { tenantId, moveOutDate, depositDeduction, deductionReason }
+  try {
+    const unitSheetName = SpreadsheetApp.getActiveSpreadsheet().getSheets()[0].getName();
+    const units = getSheetDataByName(unitSheetName);
+    const unit = units.find(function(u) { return u['業主ID'] === ownerId && u['租客ID'] === formData.tenantId; });
+    if (!unit) return { success: false, message: '找不到租客資料' };
+
+    const deposit    = parseFloat(unit['押金']) || 0;
+    const deduction  = parseFloat(formData.depositDeduction) || 0;
+    const refund     = deposit - deduction;
+    const currency   = unit['貨幣符號'] || '¥';
+    const now        = new Date();
+    const monthStr   = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0');
+    const moveOutDate = formData.moveOutDate || now.toLocaleDateString('zh-TW');
+    const tenantName = unit['租客姓名'] || formData.tenantId;
+    const deductNote = deduction > 0 && formData.deductionReason
+      ? '【扣除明細】' + formData.deductionReason + '：' + currency + deduction.toFixed(2)
+      : deduction > 0 ? '押金扣除：' + currency + deduction.toFixed(2) : '';
+
+    const data = {
+      '記錄ID':      'PAY' + now.getTime() + Math.random().toString(36).slice(-4),
+      '業主ID':      ownerId,
+      '租客ID':      formData.tenantId,
+      '建立日期':    now.toLocaleDateString('zh-TW'),
+      '款項期間':    monthStr,
+      '文件類別':    refund >= 0 ? '退租收據' : '退租帳單',
+      '標題項目':    tenantName + ' — 退租結算單',
+      '總金額':      deposit,
+      '已付金額':    refund > 0 ? refund : 0,
+      '收款日期':    moveOutDate,
+      '繳費狀態':    refund >= deposit ? '已繳費' : refund > 0 ? '部分繳費' : '未繳費',
+      '關聯單據ID':  '',
+      '自動生成':    '否',
+      '需發送Email': '否',
+      '貨幣符號':    currency,
+      '備註':        deductNote
+    };
+    const result = serverAddPayment(data);
+    if (result.success) {
+      return { success: true, deposit: deposit, deduction: deduction, refund: refund, currency: currency };
+    }
+    return result;
+  } catch (e) { return { success: false, message: e.toString() }; }
+}
+
+// ==========================================
+// 模組：逾期催款 & 月結單
+// ==========================================
+
+function serverSendOverdueReminders(ownerId) {
+  try {
+    const unitSheetName = SpreadsheetApp.getActiveSpreadsheet().getSheets()[0].getName();
+    const units = getSheetDataByName(unitSheetName).filter(function(u) { return u['業主ID'] === ownerId; });
+    const now = new Date();
+    const currentYM = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0');
+    const overduePayments = getSheetDataByName('繳費紀錄').filter(function(p) {
+      if (p['業主ID'] !== ownerId) return false;
+      if (p['繳費狀態'] === '已繳費') return false;
+      const period = p['款項期間'] || '';
+      return !period || period < currentYM;
+    });
+    const tenantMap = {};
+    overduePayments.forEach(function(p) {
+      if (!tenantMap[p['租客ID']]) tenantMap[p['租客ID']] = [];
+      tenantMap[p['租客ID']].push(p);
+    });
+    let sent = 0;
+    Object.keys(tenantMap).forEach(function(tenantId) {
+      const unit = units.find(function(u) { return u['租客ID'] === tenantId; });
+      if (!unit || !unit['Email']) return;
+      const bills = tenantMap[tenantId];
+      const cur = bills[0]['貨幣符號'] || '¥';
+      const totalOwing = bills.reduce(function(s, p) {
+        return s + Math.max((parseFloat(p['總金額']) || 0) - (parseFloat(p['已付金額']) || 0), 0);
+      }, 0);
+      let body = '親愛的 ' + unit['租客姓名'] + ' 您好：\n\n';
+      body += '系統顯示您有以下逾期未繳費帳單，請盡快處理：\n\n';
+      bills.forEach(function(p) {
+        const owing = Math.max((parseFloat(p['總金額']) || 0) - (parseFloat(p['已付金額']) || 0), 0);
+        body += '・' + p['標題項目'] + '（' + (p['款項期間'] || p['建立日期']) + '）尚欠 ' + cur + owing.toLocaleString() + '\n';
+      });
+      body += '\n合計尚欠：' + cur + totalOwing.toLocaleString() + '\n\n';
+      body += '請登入物業管理系統盡快完成繳費，感謝您的配合。\n\n-- 物業管理系統自動催款通知 --';
+      try {
+        MailApp.sendEmail(unit['Email'],
+          '[催款通知] 您有 ' + bills.length + ' 筆逾期帳單，合計 ' + cur + totalOwing.toLocaleString(), body);
+        sent++;
+      } catch(e) { console.error('催款發信失敗:', e.toString()); }
+    });
+    return { success: true, sent: sent };
+  } catch (e) { return { success: false, message: e.toString() }; }
+}
+
+function serverSendMonthlyStatements(ownerId, yearMonth) {
+  try {
+    const unitSheetName = SpreadsheetApp.getActiveSpreadsheet().getSheets()[0].getName();
+    const units = getSheetDataByName(unitSheetName).filter(function(u) {
+      return u['業主ID'] === ownerId && u['Email'] && u['租客ID'];
+    });
+    const now = new Date();
+    const ym = yearMonth || (now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0'));
+    const displayMonth = ym.split('-')[0] + '年' + parseInt(ym.split('-')[1]) + '月';
+    const allPayments = getSheetDataByName('繳費紀錄').filter(function(p) {
+      return p['業主ID'] === ownerId && p['款項期間'] === ym;
+    });
+    let sent = 0;
+    units.forEach(function(unit) {
+      const tenantBills = allPayments.filter(function(p) { return p['租客ID'] === unit['租客ID']; });
+      if (tenantBills.length === 0) return;
+      const cur = unit['貨幣符號'] || '¥';
+      const totalAmount = tenantBills.reduce(function(s, p) { return s + (parseFloat(p['總金額']) || 0); }, 0);
+      const totalPaid   = tenantBills.reduce(function(s, p) { return s + (parseFloat(p['已付金額']) || 0); }, 0);
+      const totalOwing  = Math.max(totalAmount - totalPaid, 0);
+      let body = '親愛的 ' + unit['租客姓名'] + ' 您好：\n\n';
+      body += '以下是您 ' + displayMonth + ' 的帳單月結單：\n\n';
+      body += '═══════════════════════════════\n';
+      tenantBills.forEach(function(p) {
+        const icon = p['繳費狀態'] === '已繳費' ? '✅' : p['繳費狀態'] === '部分繳費' ? '⚠️' : '❌';
+        body += icon + ' ' + p['標題項目'] + '\n';
+        body += '   應繳：' + cur + (parseFloat(p['總金額'])||0).toLocaleString() + '  已付：' + cur + (parseFloat(p['已付金額'])||0).toLocaleString() + '\n';
+      });
+      body += '═══════════════════════════════\n';
+      body += '本月應繳合計：' + cur + totalAmount.toLocaleString() + '\n';
+      body += '已付合計：    ' + cur + totalPaid.toLocaleString() + '\n';
+      body += '尚欠：        ' + cur + totalOwing.toLocaleString() + '\n\n';
+      body += '如有疑問請聯絡業主。\n\n-- 物業管理系統 ' + displayMonth + ' 月結單 --';
+      try {
+        MailApp.sendEmail(unit['Email'], '[' + displayMonth + '月結單] ' + unit['租客姓名'] + ' 帳單明細', body);
+        sent++;
+      } catch(e) { console.error('月結單發信失敗:', e.toString()); }
+    });
+    return { success: true, sent: sent, month: ym };
+  } catch (e) { return { success: false, message: e.toString() }; }
+}
+
+// ==========================================
+// 模組：租金調整通知
+// ==========================================
+
+function serverSendRentAdjustmentNotice(ownerId, data) {
+  // data: { tenantId, newRent, effectiveDate, reason, updateNow }
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const unitSheet = ss.getSheets()[0];
+    const units = getSheetDataByName(unitSheet.getName());
+    const unitIdx = units.findIndex(function(u) { return u['業主ID'] === ownerId && u['租客ID'] === data.tenantId; });
+    if (unitIdx === -1) return { success: false, message: '找不到租客資料' };
+    const unit = units[unitIdx];
+    const oldRent = parseFloat(unit['每月租金']) || 0;
+    const newRent = parseFloat(data.newRent) || 0;
+    const cur = unit['貨幣符號'] || '¥';
+    if (data.updateNow) {
+      const headers = unitSheet.getRange(1, 1, 1, unitSheet.getLastColumn()).getValues()[0];
+      const rentCol = headers.indexOf('每月租金') + 1;
+      if (rentCol > 0) unitSheet.getRange(unitIdx + 2, rentCol).setValue(newRent);
+    }
+    if (unit['Email']) {
+      const diff = newRent - oldRent;
+      const pct = oldRent > 0 ? (diff / oldRent * 100).toFixed(1) : '—';
+      let body = '親愛的 ' + unit['租客姓名'] + ' 您好：\n\n';
+      body += '茲通知您，您位於「' + unit['單位地址'] + '」的租金將作出以下調整：\n\n';
+      body += '・現時租金：' + cur + oldRent.toLocaleString() + ' / 月\n';
+      body += '・調整後租金：' + cur + newRent.toLocaleString() + ' / 月（' + (diff >= 0 ? '+' : '') + pct + '%）\n';
+      body += '・生效日期：' + data.effectiveDate + '\n';
+      if (data.reason) body += '・調整原因：' + data.reason + '\n';
+      body += '\n如有任何疑問，請盡快與業主聯絡洽商。\n\n-- 物業管理系統自動通知 --';
+      MailApp.sendEmail(unit['Email'], '[租金調整通知] ' + unit['單位地址'] + ' 租金調整生效日：' + data.effectiveDate, body);
+    }
+    return { success: true, oldRent: oldRent, newRent: newRent };
+  } catch (e) { return { success: false, message: e.toString() }; }
+}
+
+// ==========================================
+// 模組：租客備忘錄
+// ==========================================
+
+function serverUpdateTenantMemo(rowIndex, memo) {
+  try {
+    const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheets()[0];
+    const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    const col = headers.indexOf('待辦事項') + 1;
+    if (col <= 0 || !rowIndex) return { success: false, message: '找不到備忘欄位' };
+    sheet.getRange(rowIndex, col).setValue(memo);
+    return { success: true };
+  } catch (e) { return { success: false, message: e.toString() }; }
+}
+
+// ==========================================
+// 模組：入退住清單
+// ==========================================
+
+function serverGetChecklist(ownerId, tenantId, type) {
+  try {
+    const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('入退住清單');
+    if (!sheet) return { success: true, items: null };
+    const data = sheet.getDataRange().getValues();
+    if (data.length <= 1) return { success: true, items: null };
+    const headers = data[0];
+    for (var i = 1; i < data.length; i++) {
+      const row = {}; headers.forEach(function(h, j) { row[h] = data[i][j]; });
+      if (row['業主ID'] === ownerId && row['租客ID'] === tenantId && row['類型'] === type) {
+        return { success: true, items: JSON.parse(row['項目JSON'] || '[]'), savedDate: row['儲存日期'] };
+      }
+    }
+    return { success: true, items: null };
+  } catch (e) { return { success: false, message: e.toString() }; }
+}
+
+function serverSaveChecklist(ownerId, tenantId, type, itemsJSON) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    let sheet = ss.getSheetByName('入退住清單');
+    if (!sheet) {
+      sheet = ss.insertSheet('入退住清單', ss.getNumSheets());
+      sheet.appendRow(['業主ID', '租客ID', '類型', '儲存日期', '項目JSON']);
+      sheet.getRange(1, 1, 1, 5).setFontWeight('bold').setBackground('#f3f4f6');
+    }
+    const data = sheet.getDataRange().getValues();
+    const headers = data[0];
+    const jsonCol    = headers.indexOf('項目JSON')  + 1;
+    const dateCol    = headers.indexOf('儲存日期')  + 1;
+    for (var i = 1; i < data.length; i++) {
+      if (data[i][0] === ownerId && data[i][1] === tenantId && data[i][2] === type) {
+        sheet.getRange(i + 1, jsonCol).setValue(itemsJSON);
+        sheet.getRange(i + 1, dateCol).setValue(new Date().toLocaleDateString('zh-TW'));
+        return { success: true };
+      }
+    }
+    sheet.appendRow([ownerId, tenantId, type, new Date().toLocaleDateString('zh-TW'), itemsJSON]);
+    return { success: true };
+  } catch (e) { return { success: false, message: e.toString() }; }
+}
+
+// ==========================================
+// 模組：歷史租客（退租記錄保存）
+// ==========================================
+
+function serverArchiveTenant(ownerId, unitRowIndex, archiveData) {
+  // archiveData: { moveOutDate, depositStatus, notes }
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    let archSheet = ss.getSheetByName('歷史租客');
+    if (!archSheet) {
+      archSheet = ss.insertSheet('歷史租客', ss.getNumSheets());
+      archSheet.appendRow(['業主ID', '租客ID', '租客姓名', '單位地址', '每月租金', '押金', '退租日期', '押金狀態', '備注', '封存日期']);
+      archSheet.getRange(1, 1, 1, 10).setFontWeight('bold').setBackground('#f3f4f6');
+    }
+    const unitSheet = ss.getSheets()[0];
+    const unitHeaders = unitSheet.getRange(1, 1, 1, unitSheet.getLastColumn()).getValues()[0];
+    const unitRow     = unitSheet.getRange(unitRowIndex, 1, 1, unitSheet.getLastColumn()).getValues()[0];
+    const u = {}; unitHeaders.forEach(function(h, i) { u[h] = unitRow[i]; });
+    archSheet.appendRow([
+      ownerId, u['租客ID'], u['租客姓名'], u['單位地址'],
+      u['每月租金'], u['押金'],
+      archiveData.moveOutDate || new Date().toLocaleDateString('zh-TW'),
+      archiveData.depositStatus || '未確認',
+      archiveData.notes || '',
+      new Date().toLocaleDateString('zh-TW')
+    ]);
+    // Clear tenant from unit (keep unit record, remove tenant info)
+    ['租客ID','租客姓名','Email','合約終止日','押金'].forEach(function(col) {
+      const idx = unitHeaders.indexOf(col);
+      if (idx >= 0) unitSheet.getRange(unitRowIndex, idx + 1).setValue('');
+    });
+    return { success: true };
+  } catch (e) { return { success: false, message: e.toString() }; }
+}
+
+// ── Stripe Integration ──────────────────────────────────────────
+// Secret key is stored in GAS Script Properties under key: STRIPE_SECRET_KEY
+// Set it once via: Extensions → Apps Script → Project Settings → Script Properties
+// Products: Pro = prod_UNojZKJGBbsWoY | Max = prod_UNokWNmW0HUtV4
+
+function serverCreateStripeCheckout(email, tier) {
+  try {
+    var secretKey = PropertiesService.getScriptProperties().getProperty('STRIPE_SECRET_KEY');
+    if (!secretKey) return { success: false, message: '請先在 GAS 腳本屬性中設定 STRIPE_SECRET_KEY' };
+
+    var productIds = { 'Pro': 'prod_UNojZKJGBbsWoY', 'Max': 'prod_UNokWNmW0HUtV4' };
+    var productId = productIds[tier];
+    if (!productId) return { success: false, message: '無效方案' };
+
+    var authHeader = 'Basic ' + Utilities.base64Encode(secretKey + ':');
+
+    // Get first active recurring price for the product
+    var priceResp = UrlFetchApp.fetch(
+      'https://api.stripe.com/v1/prices?product=' + productId + '&active=true&type=recurring&limit=1',
+      { headers: { 'Authorization': authHeader } }
+    );
+    var priceData = JSON.parse(priceResp.getContentText());
+    if (!priceData.data || !priceData.data.length)
+      return { success: false, message: '找不到商品訂閱價格，請先在 Stripe 設定訂閱定價' };
+    var priceId = priceData.data[0].id;
+
+    var scriptUrl = ScriptApp.getService().getUrl();
+    var sessionResp = UrlFetchApp.fetch('https://api.stripe.com/v1/checkout/sessions', {
+      method: 'post',
+      headers: { 'Authorization': authHeader },
+      payload: {
+        'mode': 'subscription',
+        'line_items[0][price]': priceId,
+        'line_items[0][quantity]': '1',
+        'customer_email': email,
+        'success_url': scriptUrl + '?stripe_success=1',
+        'cancel_url': scriptUrl,
+        'metadata[tier]': tier,
+        'metadata[email]': email
+      }
+    });
+    var sessionData = JSON.parse(sessionResp.getContentText());
+    if (sessionData.url) return { success: true, url: sessionData.url };
+    return { success: false, message: sessionData.error ? sessionData.error.message : '無法建立結帳連結' };
+  } catch(e) { return { success: false, message: e.toString() }; }
+}
+
+function serverVerifyStripeSubscription(email) {
+  try {
+    var secretKey = PropertiesService.getScriptProperties().getProperty('STRIPE_SECRET_KEY');
+    if (!secretKey) return { success: false, message: '請先在 GAS 腳本屬性中設定 STRIPE_SECRET_KEY' };
+
+    var authHeader = 'Basic ' + Utilities.base64Encode(secretKey + ':');
+
+    // Look up customer by email
+    var custResp = UrlFetchApp.fetch(
+      'https://api.stripe.com/v1/customers?email=' + encodeURIComponent(email) + '&limit=1',
+      { headers: { 'Authorization': authHeader } }
+    );
+    var custData = JSON.parse(custResp.getContentText());
+    if (!custData.data || !custData.data.length)
+      return { success: false, message: '找不到 Stripe 客戶記錄，請確認付款時使用了相同的 Email' };
+    var customerId = custData.data[0].id;
+
+    // Get active subscriptions for this customer
+    var subResp = UrlFetchApp.fetch(
+      'https://api.stripe.com/v1/subscriptions?customer=' + customerId + '&status=active&limit=5',
+      { headers: { 'Authorization': authHeader } }
+    );
+    var subData = JSON.parse(subResp.getContentText());
+    if (!subData.data || !subData.data.length)
+      return { success: false, message: '找不到有效訂閱，付款可能仍在處理中，請稍後再試' };
+
+    // Map product IDs to plan tiers
+    var tierMap = { 'prod_UNojZKJGBbsWoY': 'Pro', 'prod_UNokWNmW0HUtV4': 'Max' };
+    var foundTier = null;
+    for (var s = 0; s < subData.data.length && !foundTier; s++) {
+      var items = subData.data[s].items.data;
+      for (var it = 0; it < items.length && !foundTier; it++) {
+        var pId = items[it].price.product;
+        if (tierMap[pId]) foundTier = tierMap[pId];
+      }
+    }
+    if (!foundTier) return { success: false, message: '訂閱商品不符合系統方案，請聯絡支援' };
+
+    // Update tier in 系統帳號 sheet
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('系統帳號');
+    var sheetData = sheet.getDataRange().getValues();
+    var headers = sheetData[0];
+    var emailCol = headers.indexOf('帳號ID(Email)');
+    var tierCol  = headers.indexOf('權限等級');
+    for (var i = 1; i < sheetData.length; i++) {
+      if (sheetData[i][emailCol] === email) {
+        sheet.getRange(i + 1, tierCol + 1).setValue(foundTier);
+        _writeSubscriptionLog_(email, foundTier, '已訂閱');
+        return { success: true, tier: foundTier };
+      }
+    }
+    return { success: false, message: '找不到系統帳號，請確認登入 Email 與付款 Email 一致' };
+  } catch(e) { return { success: false, message: e.toString() }; }
+}
+// ────────────────────────────────────────────────────────────────
+
+// 批量同步：掃描所有業主帳號，對照 Stripe 訂閱狀態並更新
+function syncAllSubscriptions() {
+  var secretKey = PropertiesService.getScriptProperties().getProperty('STRIPE_SECRET_KEY');
+  if (!secretKey) { Logger.log('ERROR: STRIPE_SECRET_KEY 未設定'); return; }
+  var authHeader = 'Basic ' + Utilities.base64Encode(secretKey + ':');
+  var tierMap = { 'prod_UNojZKJGBbsWoY': 'Pro', 'prod_UNokWNmW0HUtV4': 'Max' };
+
+  // 取得所有業主帳號
+  var accounts = getSheetDataByName('系統帳號').filter(function(a) {
+    return a['角色'] === 'admin' && a['帳號ID(Email)'];
+  });
+  Logger.log('共找到 ' + accounts.length + ' 個業主帳號，開始同步...');
+
+  var updated = 0, skipped = 0, noStripe = 0;
+
+  accounts.forEach(function(acc) {
+    var email = acc['帳號ID(Email)'].toString().trim();
+    try {
+      // 查詢 Stripe 客戶
+      var custResp = UrlFetchApp.fetch(
+        'https://api.stripe.com/v1/customers?email=' + encodeURIComponent(email) + '&limit=1',
+        { headers: { 'Authorization': authHeader }, muteHttpExceptions: true }
+      );
+      var custData = JSON.parse(custResp.getContentText());
+      if (!custData.data || !custData.data.length) {
+        Logger.log('[' + email + '] 無 Stripe 客戶記錄，略過');
+        noStripe++; return;
+      }
+      var customerId = custData.data[0].id;
+
+      // 查詢有效訂閱
+      var subResp = UrlFetchApp.fetch(
+        'https://api.stripe.com/v1/subscriptions?customer=' + customerId + '&status=active&limit=5',
+        { headers: { 'Authorization': authHeader }, muteHttpExceptions: true }
+      );
+      var subData = JSON.parse(subResp.getContentText());
+
+      if (!subData.data || !subData.data.length) {
+        // 無有效訂閱 → 降為 Free
+        serverUpgradeUserTier(email, 'Free');
+        _writeSubscriptionLog_(email, 'Free', '同步-無訂閱');
+        Logger.log('[' + email + '] 無有效訂閱 → Free');
+        updated++; return;
+      }
+
+      // 比對方案
+      var foundTier = null;
+      for (var s = 0; s < subData.data.length && !foundTier; s++) {
+        var items = subData.data[s].items.data;
+        for (var it = 0; it < items.length && !foundTier; it++) {
+          if (tierMap[items[it].price.product]) foundTier = tierMap[items[it].price.product];
+        }
+      }
+      if (!foundTier) { Logger.log('[' + email + '] 有訂閱但方案不符，略過'); skipped++; return; }
+
+      serverUpgradeUserTier(email, foundTier);
+      _writeSubscriptionLog_(email, foundTier, '同步-已訂閱');
+      Logger.log('[' + email + '] → ' + foundTier);
+      updated++;
+      Utilities.sleep(300); // 避免觸發 Stripe API rate limit
+    } catch(e) {
+      Logger.log('[' + email + '] 錯誤: ' + e.toString());
+    }
+  });
+
+  Logger.log('=== 同步完成 | 已更新: ' + updated + ' | 略過: ' + skipped + ' | 無Stripe記錄: ' + noStripe + ' ===');
+}
+
+function serverGetArchivedTenants(ownerId) {
+  try {
+    const data = getSheetDataByName('歷史租客');
+    return { success: true, records: data.filter(function(r) { return r['業主ID'] === ownerId; }) };
+  } catch (e) { return { success: true, records: [] }; }
+}

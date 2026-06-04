@@ -1,0 +1,76 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+body {
+  -webkit-tap-highlight-color: transparent;
+  background: #f8fafc;
+  color: #0f172a;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Microsoft JhengHei",
+    "PingFang TC", "Noto Sans TC", sans-serif;
+  /* lining, tabular figures so money columns align and scan cleanly */
+  font-variant-numeric: tabular-nums;
+}
+
+/* monetary / metric figures */
+.tnum {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+@layer components {
+  .card {
+    @apply bg-white rounded-2xl p-4 shadow-card;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-xl px-4 py-2.5 text-sm font-semibold transition active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none;
+  }
+  .btn-primary {
+    @apply btn bg-indigo-600 text-white hover:bg-indigo-700 shadow-sm shadow-indigo-600/20;
+  }
+  .btn-ghost {
+    @apply btn bg-slate-100 text-slate-700 hover:bg-slate-200;
+  }
+  .btn-danger {
+    @apply btn bg-red-50 text-red-600 hover:bg-red-100;
+  }
+  /* size variants */
+  .btn-sm {
+    @apply !px-3 !py-2 text-[13px] rounded-lg;
+  }
+  /* small pill action button used in lists */
+  .pill {
+    @apply inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1.5 rounded-lg transition active:scale-95;
+  }
+  .input {
+    @apply w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-sm outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 bg-white;
+  }
+  .label {
+    @apply block text-xs font-medium text-slate-500 mb-1;
+  }
+  .badge {
+    @apply inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold;
+  }
+  .badge-emerald { @apply bg-emerald-100 text-emerald-700; }
+  .badge-red     { @apply bg-red-100 text-red-700; }
+  .badge-amber   { @apply bg-amber-100 text-amber-800; }
+  .badge-blue    { @apply bg-blue-100 text-blue-700; }
+  .badge-indigo  { @apply bg-indigo-100 text-indigo-700; }
+  .badge-slate   { @apply bg-slate-100 text-slate-600; }
+}
+
+/* On mobile, prevent iOS zoom on focus */
+@media (max-width: 767px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+}
+
+.hide-scrollbar::-webkit-scrollbar { display: none; }
+.hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
