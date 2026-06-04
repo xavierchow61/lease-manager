@@ -18,3 +18,5 @@ build
 # reference exports of the original Apps Script version (optional to keep)
 # index.html.txt
 # 程式碼.gs.txt
+
+.vercel

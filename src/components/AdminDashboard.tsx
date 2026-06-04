@@ -555,6 +555,7 @@ function PaymentsTab({
   const [billModal, setBillModal] = useState(false);
   const [toolsModal, setToolsModal] = useState(false);
   const [partial, setPartial] = useState<Payment | null>(null);
+  const [editing, setEditing] = useState<Payment | null>(null);
 
   const filtered = payments.filter((p) => {
     if (filter !== "全部" && p.status !== filter) return false;
@@ -608,7 +609,7 @@ function PaymentsTab({
                   <span className="text-xs text-slate-400 ml-2">已付 {fmtNum(p.paidAmount)}</span>
                 )}
               </div>
-              <div className="flex gap-1.5">
+              <div className="flex gap-1.5 flex-wrap justify-end">
                 <button className="pill bg-indigo-50 text-indigo-700 hover:bg-indigo-100" onClick={() => window.open(`/doc/${p.id}`, "_blank")}><FileText size={13} /> 單據</button>
                 {p.status !== "已繳費" && (
                   <>
@@ -616,6 +617,7 @@ function PaymentsTab({
                     <button className="pill bg-amber-50 text-amber-700 hover:bg-amber-100" onClick={() => setPartial(p)}>部分收款</button>
                   </>
                 )}
+                <button className="pill bg-slate-100 text-slate-600 hover:bg-slate-200" aria-label="編輯單據" onClick={() => setEditing(p)}><Pencil size={13} /></button>
                 <button className="pill bg-red-50 text-red-600 hover:bg-red-100" aria-label="刪除單據" onClick={() => { if (confirm("確定刪除此單據？")) call(`payments/${p.id}`, "DELETE", undefined, "已刪除"); }}><Trash2 size={13} /></button>
               </div>
             </div>
@@ -627,6 +629,7 @@ function PaymentsTab({
       <BillModal open={billModal} onClose={() => setBillModal(false)} tenants={tenants} cur={cur} call={call} />
       <ToolsModal open={toolsModal} onClose={() => setToolsModal(false)} tenants={tenants} cur={cur} call={call} toast={toast} />
       <PartialModal target={partial} onClose={() => setPartial(null)} call={call} />
+      <EditPaymentModal target={editing} onClose={() => setEditing(null)} tenants={tenants} call={call} />
     </div>
   );
 }
@@ -703,6 +706,61 @@ function PartialModal({ target, onClose, call }: {
       <div className="grid grid-cols-2 gap-3">
         <Field label="本次收款金額"><input className="input" type="number" value={amount} onChange={(e) => setAmount(e.target.value)} /></Field>
         <Field label="收款日期"><input className="input" type="date" value={date} onChange={(e) => setDate(e.target.value)} /></Field>
+      </div>
+    </Modal>
+  );
+}
+
+function EditPaymentModal({ target, onClose, tenants, call }: {
+  target: Payment | null; onClose: () => void; tenants: Unit[];
+  call: (p: string, m: "POST" | "PUT" | "DELETE", b?: unknown, ok?: string) => Promise<boolean>;
+}) {
+  const [f, setF] = useState({ tenantCode: "", docCategory: "帳單", title: "", period: "", totalAmount: "", paidAmount: "", receiptDate: "", remark: "" });
+  useEffect(() => {
+    if (target) setF({
+      tenantCode: target.tenantCode,
+      docCategory: target.docCategory,
+      title: target.title,
+      period: target.period,
+      totalAmount: String(target.totalAmount),
+      paidAmount: String(target.paidAmount),
+      receiptDate: target.receiptDate,
+      remark: target.remark,
+    });
+  }, [target]);
+  if (!target) return null;
+  return (
+    <Modal open={!!target} onClose={onClose} title="編輯單據" footer={
+      <>
+        <button className="btn-ghost" onClick={onClose}>取消</button>
+        <button className="btn-primary" onClick={async () => {
+          const ok = await call(`payments/${target.id}`, "PUT", { action: "edit", ...f }, "已更新單據");
+          if (ok) onClose();
+        }}>儲存</button>
+      </>
+    }>
+      <div className="space-y-3">
+        <Field label="租客">
+          <select className="input" value={f.tenantCode} onChange={(e) => setF({ ...f, tenantCode: e.target.value })}>
+            {tenants.map((t) => <option key={t.id} value={t.tenantCode}>{t.tenantName}（{t.tenantCode}）</option>)}
+          </select>
+        </Field>
+        <Field label="項目標題"><input className="input" value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} /></Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="文件類別">
+            <select className="input" value={f.docCategory} onChange={(e) => setF({ ...f, docCategory: e.target.value })}>
+              {["帳單", "收據", "預付款", "退租收據", "退租帳單"].map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </Field>
+          <Field label="款項期間"><input className="input" type="month" value={f.period} onChange={(e) => setF({ ...f, period: e.target.value })} /></Field>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="總金額"><input className="input" type="number" value={f.totalAmount} onChange={(e) => setF({ ...f, totalAmount: e.target.value })} /></Field>
+          <Field label="已付金額"><input className="input" type="number" value={f.paidAmount} onChange={(e) => setF({ ...f, paidAmount: e.target.value })} /></Field>
+        </div>
+        <Field label="收款日期"><input className="input" type="date" value={f.receiptDate} onChange={(e) => setF({ ...f, receiptDate: e.target.value })} /></Field>
+        <Field label="備註"><input className="input" value={f.remark} onChange={(e) => setF({ ...f, remark: e.target.value })} /></Field>
+        <p className="text-xs text-slate-500">＊ 繳費狀態會依「已付 / 總金額」自動判定。</p>
       </div>
     </Modal>
   );

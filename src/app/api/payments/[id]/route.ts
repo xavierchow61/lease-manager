@@ -26,6 +26,29 @@ export async function PUT(
 
   const body = await req.json();
 
+  if (body.action === "edit") {
+    // Full edit of a single document. Status is recomputed from amounts.
+    const total = body.totalAmount !== undefined ? num(body.totalAmount) : p.totalAmount;
+    const paid = body.paidAmount !== undefined ? num(body.paidAmount) : p.paidAmount;
+    const status = paid >= total && total > 0 ? "已繳費" : paid > 0 ? "部分繳費" : "未繳費";
+    const updated = await prisma.payment.update({
+      where: { id: p.id },
+      data: {
+        tenantCode: body.tenantCode ?? p.tenantCode,
+        docCategory: body.docCategory ?? p.docCategory,
+        title: body.title ?? p.title,
+        period: body.period ?? p.period,
+        totalAmount: total,
+        paidAmount: paid,
+        receiptDate: body.receiptDate ?? p.receiptDate,
+        currency: body.currency ?? p.currency,
+        remark: body.remark ?? p.remark,
+        status,
+      },
+    });
+    return ok({ payment: updated });
+  }
+
   if (body.action === "partial") {
     const newPaid = p.paidAmount + num(body.amount);
     const status =
