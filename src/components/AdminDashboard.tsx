@@ -554,7 +554,10 @@ function PaymentsTab({
 }) {
   const toast = useToast();
   const cur = user.currency;
-  const tenants = units.filter((u) => u.tenantCode);
+  // 依租客編號自然排序（T101 < T201 < T202 < … 數字感知，T2 不會排在 T10 後）
+  const tenants = units
+    .filter((u) => u.tenantCode)
+    .sort((a, b) => a.tenantCode.localeCompare(b.tenantCode, undefined, { numeric: true, sensitivity: "base" }));
   const [filter, setFilter] = useState("全部");
   const [tenantFilter, setTenantFilter] = useState("全部");
   const [view, setView] = useState<"bills" | "ledger">("bills");
