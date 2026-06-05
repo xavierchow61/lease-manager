@@ -5,9 +5,11 @@ import {
   LayoutDashboard, Building2, Wallet, Wrench, TrendingDown, BarChart3, Crown,
   Lock, Plus, Receipt, Wand2, RotateCw, Droplets, Banknote, ShieldCheck,
   LogOut, Bell, Clock, AlertTriangle, FileText, Trash2, Pencil, Settings, KeyRound,
+  Download, TrendingUp, Award,
 } from "lucide-react";
 import { api, type User, type AllData, type Unit, type Payment } from "@/lib/client";
 import { fmtMoney, fmtNum, todayISO, currentYM, incomeCategory, CURRENCY_OPTIONS } from "@/lib/money";
+import { downloadCSV } from "@/lib/csv";
 import { tierLimits, PLAN_INFO, type Tier } from "@/lib/tiers";
 import { useToast, Modal, Stat, Field } from "./ui";
 import Shell, { type Tab } from "./Shell";
@@ -56,6 +58,33 @@ export default function AdminDashboard({ user, data, refresh, onLogout, onTierCh
   const pendingRep = repairs.filter((r) => r.status !== "完成").length;
   const totalRent = occupied.reduce((s, u) => s + (u.monthlyRent || 0), 0);
   const expiring = occupied.filter((u) => isExpiringSoon(u.leaseEndDate));
+
+  // ── dashboard analytics ──
+  const realPays = payments.filter((p) => !["預付款", "預付款抵扣"].includes(p.docCategory));
+  const thisMonth = currentYM();
+  const now = new Date();
+  const trend = Array.from({ length: 12 }, (_, i) => {
+    const dt = new Date(now.getFullYear(), now.getMonth() - 11 + i, 1);
+    const ym = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}`;
+    return { ym, label: `${dt.getMonth() + 1}月`, received: realPays.filter((p) => p.period === ym).reduce((s, p) => s + p.paidAmount, 0) };
+  });
+  const trendMax = Math.max(1, ...trend.map((t) => t.received));
+  const monthBills = realPays.filter((p) => p.period === thisMonth);
+  const billed = monthBills.reduce((s, p) => s + p.totalAmount, 0);
+  const collected = monthBills.reduce((s, p) => s + p.paidAmount, 0);
+  const collectionRate = billed > 0 ? Math.round((collected / billed) * 100) : 0;
+  const tenantScores = units
+    .filter((u) => u.tenantCode)
+    .map((u) => {
+      const ps = realPays.filter((p) => p.tenantCode === u.tenantCode);
+      const total = ps.length;
+      const paid = ps.filter((p) => p.status === "已繳費").length;
+      const rate = total > 0 ? Math.round((paid / total) * 100) : 0;
+      const grade = rate >= 90 ? "A" : rate >= 70 ? "B" : rate >= 50 ? "C" : "D";
+      return { code: u.tenantCode, name: u.tenantName || u.tenantCode, total, paid, rate, grade };
+    })
+    .filter((s) => s.total > 0)
+    .sort((a, b) => b.rate - a.rate);
 
   async function call(path: string, method: "POST" | "PUT" | "DELETE", body?: unknown, okMsg?: string) {
     const r = await api(path, method, body);
@@ -113,6 +142,67 @@ export default function AdminDashboard({ user, data, refresh, onLogout, onTierCh
               <button className="btn-ghost gap-1.5" onClick={() => setTab("plan")}><Crown size={16} /> 升級方案</button>
             </div>
           </div>
+
+          {/* 收入趨勢 + 本月收款率 */}
+          <div className="grid md:grid-cols-3 gap-4">
+            <div className="card md:col-span-2">
+              <div className="flex items-center gap-1.5 font-semibold text-slate-800 mb-3"><TrendingUp size={16} /> 近 12 個月收入趨勢</div>
+              <div className="flex items-end gap-1.5 h-36">
+                {trend.map((t) => (
+                  <div key={t.ym} className="flex-1 flex flex-col items-center gap-1 group">
+                    <div className="w-full flex-1 flex items-end">
+                      <div
+                        className={`w-full rounded-t-md transition-all ${t.ym === thisMonth ? "bg-indigo-600" : "bg-indigo-200 group-hover:bg-indigo-300"}`}
+                        style={{ height: `${Math.max((t.received / trendMax) * 100, t.received > 0 ? 4 : 0)}%` }}
+                        title={`${t.label}：${fmtMoney(t.received, cur)}`}
+                      />
+                    </div>
+                    <span className="text-[10px] text-slate-400">{t.label}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="card flex flex-col justify-center items-center text-center">
+              <div className="text-xs text-slate-500 mb-1">本月收款率</div>
+              <div className="relative w-28 h-28">
+                <svg viewBox="0 0 36 36" className="w-full h-full -rotate-90">
+                  <circle cx="18" cy="18" r="15.9" fill="none" stroke="#e2e8f0" strokeWidth="3.5" />
+                  <circle cx="18" cy="18" r="15.9" fill="none" stroke="#4f46e5" strokeWidth="3.5" strokeLinecap="round"
+                    strokeDasharray={`${collectionRate}, 100`} />
+                </svg>
+                <div className="absolute inset-0 flex items-center justify-center text-2xl font-bold text-indigo-600 tnum">{collectionRate}%</div>
+              </div>
+              <div className="text-xs text-slate-400 mt-2 tnum">已收 {fmtMoney(collected, cur)} / {fmtMoney(billed, cur)}</div>
+            </div>
+          </div>
+
+          {/* 租客繳費評分 */}
+          {tenantScores.length > 0 && (
+            <div className="card">
+              <div className="flex items-center gap-1.5 font-semibold text-slate-800 mb-3"><Award size={16} /> 租客繳費評分</div>
+              <div className="space-y-2">
+                {tenantScores.map((s) => {
+                  const gradeColor = s.grade === "A" ? "bg-emerald-100 text-emerald-700" : s.grade === "B" ? "bg-blue-100 text-blue-700" : s.grade === "C" ? "bg-amber-100 text-amber-700" : "bg-red-100 text-red-700";
+                  const barColor = s.grade === "A" ? "bg-emerald-400" : s.grade === "B" ? "bg-blue-400" : s.grade === "C" ? "bg-amber-400" : "bg-red-400";
+                  return (
+                    <div key={s.code} className="flex items-center gap-3">
+                      <span className={`w-7 h-7 rounded-lg flex items-center justify-center font-bold text-sm ${gradeColor}`}>{s.grade}</span>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex justify-between text-sm">
+                          <span className="text-slate-700 truncate">{s.name}</span>
+                          <span className="text-slate-400 text-xs tnum">{s.paid}/{s.total} 準時 · {s.rate}%</span>
+                        </div>
+                        <div className="h-1.5 rounded-full bg-slate-100 mt-1 overflow-hidden">
+                          <div className={`h-full rounded-full ${barColor}`} style={{ width: `${s.rate}%` }} />
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <p className="text-[11px] text-slate-400 mt-3">＊ 評分 = 已繳清單據 / 全部單據；A≥90% · B≥70% · C≥50% · D&lt;50%</p>
+            </div>
+          )}
         </div>
       )}
 
@@ -720,6 +810,17 @@ function LedgerView({ payments, tenants, cur }: { payments: Payment[]; tenants: 
           <option value="全部">全部租客</option>
           {tenants.map((t) => <option key={t.id} value={t.tenantCode}>{t.tenantName}（{t.tenantCode}）</option>)}
         </select>
+        <button
+          className="btn-ghost btn-sm gap-1.5 ml-auto"
+          disabled={entries.length === 0}
+          onClick={() => downloadCSV(
+            `收款明細_${lMonth === "全部" ? "全部" : lMonth}.csv`,
+            ["收款日期", "租客編號", "租客", "類別", "項目", "幣別", "已收金額"],
+            entries.map((e) => [e.date, e.tenantCode, tenantName(e.tenantCode), e.cat, e.title, e.currency, e.amount])
+          )}
+        >
+          <Download size={15} /> 匯出 CSV
+        </button>
       </div>
 
       <div className="grid grid-cols-2 gap-3">
@@ -1323,11 +1424,24 @@ function ReportsTab({ cur, payments, expenses }: {
 
   return (
     <div className="p-4 md:p-8 space-y-5">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-bold text-slate-800">財務報表</h1>
-        <select className="input !py-1.5 max-w-[120px]" value={year} onChange={(e) => setYear(parseInt(e.target.value))}>
-          {years.map((y) => <option key={y} value={y}>{y} 年</option>)}
-        </select>
+      <div className="flex items-center justify-between gap-2">
+        <h1 className="text-xl md:text-2xl font-bold text-slate-900 tracking-tight">財務報表</h1>
+        <div className="flex gap-2">
+          <button
+            className="btn-ghost btn-sm gap-1.5"
+            onClick={() => downloadCSV(
+              `財務報表_${year}.csv`,
+              ["月份", "租金", "管理費", "押金", "水電費", "維修費", "支出", "淨額"],
+              rows.filter((r) => r.rent || r.mgmt || r.deposit || r.utility || r.repairFee || r.expense)
+                .map((r) => [r.month, r.rent, r.mgmt, r.deposit, r.utility, r.repairFee, r.expense, r.net])
+            )}
+          >
+            <Download size={15} /> 匯出 CSV
+          </button>
+          <select className="input !py-1.5 max-w-[120px]" value={year} onChange={(e) => setYear(parseInt(e.target.value))}>
+            {years.map((y) => <option key={y} value={y}>{y} 年</option>)}
+          </select>
+        </div>
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
