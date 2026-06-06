@@ -1410,8 +1410,15 @@ function ReportsTab({ cur, payments, expenses }: {
   const sum = (c: string) => yp.filter((p) => incomeCategory(p) === c).reduce((s, p) => s + p.paidAmount, 0);
   const rent = sum("租金"), deposit = sum("押金"), mgmt = sum("管理費"), utility = sum("水電費"), repairFee = sum("維修費");
   const totalIncome = rent + deposit + mgmt + utility + repairFee;
-  const totalExpense = expenses.filter((e) => (e.date || "").startsWith(String(year))).reduce((s, e) => s + e.amount, 0);
+  const yearExpenses = expenses.filter((e) => (e.date || "").startsWith(String(year)));
+  const totalExpense = yearExpenses.reduce((s, e) => s + e.amount, 0);
   const net = totalIncome - totalExpense;
+
+  // 支出按性質（分類）
+  const expByCat = EXPENSE_CATEGORIES
+    .map((c) => ({ cat: c, amount: yearExpenses.filter((e) => (e.category || "其他") === c).reduce((s, e) => s + e.amount, 0) }))
+    .filter((b) => b.amount > 0)
+    .sort((a, b) => b.amount - a.amount);
 
   const cards: { label: string; value: number; cls: string }[] = [
     { label: "租金", value: rent, cls: "text-indigo-600" },
@@ -1492,6 +1499,49 @@ function ReportsTab({ cur, payments, expenses }: {
         </table>
       </div>
       <p className="text-xs text-slate-400">＊ 收入卡片與年度淨利以「已收金額」計算；月度表的收入欄位顯示「應收總額」、淨額以「實收−支出」計算（與原系統一致）。</p>
+
+      {/* 支出按性質（分類） */}
+      <div className="card">
+        <div className="flex items-center justify-between mb-3">
+          <div className="font-semibold text-slate-800">支出分類（{year} 年）</div>
+          {expByCat.length > 0 && (
+            <button
+              className="btn-ghost btn-sm gap-1.5"
+              onClick={() => downloadCSV(
+                `支出分類_${year}.csv`,
+                ["分類", "金額", "佔比%"],
+                expByCat.map((b) => [b.cat, b.amount, totalExpense > 0 ? Math.round((b.amount / totalExpense) * 100) : 0])
+              )}
+            >
+              <Download size={15} /> 匯出
+            </button>
+          )}
+        </div>
+        {expByCat.length === 0 ? (
+          <div className="text-center text-slate-400 py-6 text-sm">{year} 年尚無支出記錄</div>
+        ) : (
+          <div className="space-y-2.5">
+            {expByCat.map((b) => {
+              const pct = totalExpense > 0 ? Math.round((b.amount / totalExpense) * 100) : 0;
+              return (
+                <div key={b.cat}>
+                  <div className="flex justify-between text-xs mb-1">
+                    <span className="text-slate-600">{b.cat}</span>
+                    <span className="text-slate-500 tnum">{fmtMoney(b.amount, cur)} · {pct}%</span>
+                  </div>
+                  <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
+                    <div className={`h-full rounded-full ${CAT_BAR[b.cat] || "bg-slate-300"}`} style={{ width: `${pct}%` }} />
+                  </div>
+                </div>
+              );
+            })}
+            <div className="flex justify-between text-sm font-semibold pt-2 border-t border-slate-100">
+              <span className="text-slate-700">支出合計</span>
+              <span className="text-red-600 tnum">{fmtMoney(totalExpense, cur)}</span>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
