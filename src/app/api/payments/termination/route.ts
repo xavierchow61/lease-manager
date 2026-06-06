@@ -55,22 +55,26 @@ export async function POST(req: Request) {
     });
   }
 
+  const isRefund = refund >= 0;
   const lines = [
     `押金：${cur}${deposit.toFixed(2)}`,
     owing > 0 ? `扣：尚欠帳款 ${cur}${owing.toFixed(2)}` : "",
     extraDeduction > 0 ? `扣：${b.deductionReason || "其他扣除"} ${cur}${extraDeduction.toFixed(2)}` : "",
-    `${refund >= 0 ? "應退租客" : "租客尚需補繳"}：${cur}${Math.abs(refund).toFixed(2)}`,
+    `${isRefund ? "應退租客" : "租客尚需補繳"}：${cur}${Math.abs(refund).toFixed(2)}`,
   ].filter(Boolean);
 
+  // 結算單金額 = 應退/應補本身：應退 200 即「退租收據 ¥200，已退結清」；
+  // 若為負數則為「退租帳單 ¥X，待租客補繳」。不再用押金當總額，避免誤顯示未收餘額。
+  const amount = Math.abs(refund);
   const payment = await createPayment({
     ownerId: owner.id,
     tenantCode: b.tenantCode,
-    docCategory: refund >= 0 ? "退租收據" : "退租帳單",
+    docCategory: isRefund ? "退租收據" : "退租帳單",
     title: `${name} — 退租結算單`,
-    totalAmount: deposit,
-    paidAmount: refund > 0 ? refund : 0,
-    receiptDate: moveOut,
-    status: refund >= deposit ? "已繳費" : refund > 0 ? "部分繳費" : "未繳費",
+    totalAmount: amount,
+    paidAmount: isRefund ? amount : 0,
+    receiptDate: isRefund ? moveOut : "",
+    status: isRefund ? "已繳費" : "未繳費",
     currency: cur,
     remark: lines.join("\n"),
   });
