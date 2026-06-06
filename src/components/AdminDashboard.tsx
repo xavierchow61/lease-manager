@@ -788,7 +788,10 @@ function LedgerView({ payments, tenants, cur }: { payments: Payment[]; tenants: 
   const catBadge = (c: string) =>
     c === "預付款" ? "badge-indigo" : c === "收據" ? "badge-emerald" : c.includes("退租") ? "badge-amber" : "badge-slate";
 
-  const received = payments.filter((p) => p.paidAmount > 0 && p.docCategory !== "預付款抵扣");
+  // 實際收到的現金：排除「預付款抵扣」與「退租時由押金抵扣」（皆為用既有款項結清，非新現金）
+  const received = payments.filter(
+    (p) => p.paidAmount > 0 && p.docCategory !== "預付款抵扣" && !(p.remark || "").includes("退租時由押金抵扣")
+  );
   const months = Array.from(new Set(received.map((p) => toYM(p.receiptDate || p.createdDate)).filter(Boolean))).sort().reverse();
 
   const entries = received

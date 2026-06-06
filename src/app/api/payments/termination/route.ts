@@ -41,6 +41,20 @@ export async function POST(req: Request) {
   const moveOut = b.moveOutDate || new Date().toISOString().split("T")[0];
   const name = unit.tenantName || b.tenantCode;
 
+  // 把被扣抵的欠款單標記為「已用押金抵扣／結清」，避免日後重複收款
+  for (const bill of bills) {
+    const note = `（退租時由押金抵扣 ${cur}${Math.max(bill.totalAmount - bill.paidAmount, 0).toFixed(2)}）`;
+    await prisma.payment.update({
+      where: { id: bill.id },
+      data: {
+        paidAmount: bill.totalAmount,
+        status: "已繳費",
+        receiptDate: moveOut,
+        remark: (bill.remark ? bill.remark + " " : "") + note,
+      },
+    });
+  }
+
   const lines = [
     `押金：${cur}${deposit.toFixed(2)}`,
     owing > 0 ? `扣：尚欠帳款 ${cur}${owing.toFixed(2)}` : "",
