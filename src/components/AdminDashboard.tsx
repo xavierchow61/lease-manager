@@ -769,7 +769,7 @@ function PaymentsTab({
       </>)}
 
       <BillModal open={billModal} onClose={() => setBillModal(false)} tenants={tenants} cur={cur} call={call} />
-      <ToolsModal open={toolsModal} onClose={() => setToolsModal(false)} tenants={tenants} cur={cur} call={call} toast={toast} />
+      <ToolsModal open={toolsModal} onClose={() => setToolsModal(false)} tenants={tenants} payments={payments} cur={cur} call={call} toast={toast} />
       <PartialModal target={partial} onClose={() => setPartial(null)} call={call} />
       <EditPaymentModal target={editing} onClose={() => setEditing(null)} tenants={tenants} call={call} />
     </div>
@@ -1001,11 +1001,15 @@ function EditPaymentModal({ target, onClose, tenants, call }: {
   );
 }
 
-function ToolsModal({ open, onClose, tenants, cur, call, toast }: {
-  open: boolean; onClose: () => void; tenants: Unit[]; cur: string;
+function ToolsModal({ open, onClose, tenants, payments, cur, call, toast }: {
+  open: boolean; onClose: () => void; tenants: Unit[]; payments: Payment[]; cur: string;
   call: (p: string, m: "POST" | "PUT" | "DELETE", b?: unknown, ok?: string) => Promise<boolean>;
   toast: (m: string, t?: "info" | "success" | "error") => void;
 }) {
+  // 某租客尚欠的帳款（未繳/部分繳費，排除預付款與退租單）
+  const owingFor = (code: string) => payments
+    .filter((p) => p.tenantCode === code && p.status !== "已繳費" && !["預付款", "預付款抵扣", "退租收據", "退租帳單"].includes(p.docCategory))
+    .reduce((s, p) => s + Math.max(p.totalAmount - p.paidAmount, 0), 0);
   const [view, setView] = useState<"menu" | "utility" | "prepay" | "deposit" | "termination">("menu");
   // current meter readings keyed by tenantCode
   const [util, setUtil] = useState<Record<string, { water: string; elec: string }>>({});
@@ -1104,21 +1108,42 @@ function ToolsModal({ open, onClose, tenants, cur, call, toast }: {
         </div>
       )}
 
-      {view === "termination" && (
+      {view === "termination" && (() => {
+        const unit = tenants.find((t) => t.tenantCode === term.tenantCode);
+        const deposit = unit?.deposit ?? 0;
+        const owing = term.tenantCode ? owingFor(term.tenantCode) : 0;
+        const extra = parseFloat(term.depositDeduction) || 0;
+        const refund = deposit - owing - extra;
+        return (
         <div className="space-y-3">
           <button className="text-sm text-indigo-600" onClick={back}>← 返回</button>
           <TenantSelect tenants={tenants} value={term.tenantCode} onChange={(v) => setTerm({ ...term, tenantCode: v })} />
+
+          {term.tenantCode && (
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-1.5 text-sm">
+              <div className="flex justify-between"><span className="text-slate-500">押金</span><span className="font-medium tnum">{fmtMoney(deposit, cur)}</span></div>
+              <div className="flex justify-between"><span className="text-slate-500">尚欠帳款（自動）</span><span className={`font-medium tnum ${owing > 0 ? "text-red-600" : ""}`}>− {fmtMoney(owing, cur)}</span></div>
+              {extra > 0 && <div className="flex justify-between"><span className="text-slate-500">額外扣除</span><span className="font-medium tnum text-red-600">− {fmtMoney(extra, cur)}</span></div>}
+              <div className="flex justify-between border-t border-slate-200 pt-1.5 mt-1.5">
+                <span className="font-semibold text-slate-700">{refund >= 0 ? "應退租客" : "租客需補繳"}</span>
+                <span className={`font-bold text-base tnum ${refund >= 0 ? "text-emerald-600" : "text-red-600"}`}>{fmtMoney(Math.abs(refund), cur)}</span>
+              </div>
+              {owing > 0 && <p className="text-[11px] text-slate-400 pt-1">＊ 尚欠帳款由該租客未繳/部分繳費帳單自動加總，會從押金扣抵。</p>}
+            </div>
+          )}
+
           <div className="grid grid-cols-2 gap-3">
             <Field label="退租日期"><input className="input" type="date" value={term.moveOutDate} onChange={(e) => setTerm({ ...term, moveOutDate: e.target.value })} /></Field>
-            <Field label="押金扣除"><input className="input" type="number" value={term.depositDeduction} onChange={(e) => setTerm({ ...term, depositDeduction: e.target.value })} /></Field>
+            <Field label="額外扣除（清潔/損壞等）"><input className="input" type="number" value={term.depositDeduction} onChange={(e) => setTerm({ ...term, depositDeduction: e.target.value })} /></Field>
           </div>
-          <Field label="扣除原因"><input className="input" value={term.deductionReason} onChange={(e) => setTerm({ ...term, deductionReason: e.target.value })} /></Field>
-          <button className="btn-primary w-full" onClick={async () => {
+          <Field label="額外扣除原因"><input className="input" value={term.deductionReason} onChange={(e) => setTerm({ ...term, deductionReason: e.target.value })} /></Field>
+          <button className="btn-primary w-full" disabled={!term.tenantCode} onClick={async () => {
             const ok = await call("payments/termination", "POST", term, "已生成退租結算單");
             if (ok) { setView("menu"); onClose(); }
           }}>生成退租結算單</button>
         </div>
-      )}
+        );
+      })()}
     </Modal>
   );
 }
