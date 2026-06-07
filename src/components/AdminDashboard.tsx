@@ -640,21 +640,32 @@ function TransferModal({ source, vacantUnits, cur, onClose, call }: {
 }) {
   const [toUnitId, setToUnitId] = useState("");
   const [newCode, setNewCode] = useState("");
-  const [carryDeposit, setCarryDeposit] = useState(true);
+  const [newDeposit, setNewDeposit] = useState("");
 
   useEffect(() => {
-    if (source) { setToUnitId(""); setNewCode(source.tenantCode); setCarryDeposit(true); }
+    if (source) { setToUnitId(""); setNewCode(source.tenantCode); setNewDeposit(""); }
   }, [source]);
 
   if (!source) return null;
   const target = vacantUnits.find((u) => u.id === toUnitId);
+  const oldDep = source.deposit;
+  const newDep = parseFloat(newDeposit) || 0;
+  const diff = newDep - oldDep;
+
+  function pickTarget(id: string) {
+    setToUnitId(id);
+    const t = vacantUnits.find((u) => u.id === id);
+    // 預設新押金 = 目標單位設定的押金；若未設定則沿用原押金
+    const def = t && t.deposit > 0 ? t.deposit : source!.deposit;
+    setNewDeposit(String(def));
+  }
 
   return (
     <Modal open={!!source} onClose={onClose} title={`轉租 — ${source.tenantName}`} footer={
       <>
         <button className="btn-ghost" onClick={onClose}>取消</button>
         <button className="btn-primary" disabled={!toUnitId} onClick={async () => {
-          const ok = await call("units/transfer", "POST", { fromUnitId: source.id, toUnitId, newTenantCode: newCode, carryDeposit }, "轉租完成");
+          const ok = await call("units/transfer", "POST", { fromUnitId: source.id, toUnitId, newTenantCode: newCode, newDeposit: newDep }, "轉租完成");
           if (ok) onClose();
         }}>確認轉租</button>
       </>
@@ -663,11 +674,11 @@ function TransferModal({ source, vacantUnits, cur, onClose, call }: {
         <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm">
           <div className="text-slate-500 text-xs mb-1">目前</div>
           <div className="font-medium text-slate-800">{source.tenantName}（{source.tenantCode}）</div>
-          <div className="text-slate-500">{source.address}</div>
+          <div className="text-slate-500">{source.address} · 押金 {fmtMoney(oldDep, cur)}</div>
         </div>
 
         <Field label="轉到哪一間（空置單位）">
-          <select className="input" value={toUnitId} onChange={(e) => setToUnitId(e.target.value)}>
+          <select className="input" value={toUnitId} onChange={(e) => pickTarget(e.target.value)}>
             <option value="">請選擇…</option>
             {vacantUnits.map((u) => <option key={u.id} value={u.id}>{u.address || "（未填地址）"}</option>)}
           </select>
@@ -678,13 +689,27 @@ function TransferModal({ source, vacantUnits, cur, onClose, call }: {
           <input className="input" value={newCode} onChange={(e) => setNewCode(e.target.value)} />
         </Field>
         <p className="text-[11px] text-slate-500 -mt-1">
-          保留原編號 → 所有帳單/押金/維修記錄自動跟隨；改成新編號（例如配合新房號）→ 系統會一併更新相關記錄與登入帳號。
+          保留原編號 → 帳單/押金/維修記錄自動跟隨；改成新編號 → 系統會一併更新相關記錄與登入帳號。
         </p>
 
-        <label className="flex items-center gap-2 text-sm text-slate-600">
-          <input type="checkbox" checked={carryDeposit} onChange={(e) => setCarryDeposit(e.target.checked)} />
-          押金一併轉到新單位（{fmtMoney(source.deposit, cur)}）
-        </label>
+        {toUnitId && (
+          <Field label="新單位押金">
+            <input className="input" type="number" value={newDeposit} onChange={(e) => setNewDeposit(e.target.value)} />
+          </Field>
+        )}
+
+        {toUnitId && (
+          <div className={`rounded-xl border p-3 text-sm ${diff > 0 ? "border-amber-200 bg-amber-50 text-amber-800" : diff < 0 ? "border-violet-200 bg-violet-50 text-violet-800" : "border-slate-200 bg-slate-50 text-slate-600"}`}>
+            <div className="flex justify-between"><span>原押金</span><span className="tnum">{fmtMoney(oldDep, cur)}</span></div>
+            <div className="flex justify-between"><span>新押金</span><span className="tnum">{fmtMoney(newDep, cur)}</span></div>
+            <div className="flex justify-between border-t border-current/10 mt-1 pt-1 font-semibold">
+              <span>押金差額</span><span className="tnum">{diff >= 0 ? "+" : "−"}{fmtMoney(Math.abs(diff), cur)}</span>
+            </div>
+            <div className="mt-1.5 text-xs">
+              {diff > 0 ? "→ 將開立帳單，請租客補繳差額" : diff < 0 ? "→ 多付部分將記入預付款（可日後抵扣）" : "→ 押金相同，無需結算"}
+            </div>
+          </div>
+        )}
 
         {target && (
           <div className="rounded-xl border border-indigo-100 bg-indigo-50 p-3 text-sm text-indigo-800">

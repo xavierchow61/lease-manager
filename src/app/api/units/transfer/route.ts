@@ -1,9 +1,16 @@
 import { prisma } from "@/lib/db";
 import { ok, fail, adminOnly } from "@/lib/api";
+import { createPayment } from "@/lib/services";
+
+function num(v: unknown): number {
+  const n = parseFloat(String(v));
+  return isNaN(n) ? 0 : n;
+}
 
 // 轉租：把租客從來源單位轉到目標（空置）單位。
 // 押金、未繳帳單、維修、登入帳號全部跟隨；來源單位轉為空置。
-// Body: { fromUnitId, toUnitId, newTenantCode?, carryDeposit }
+// 押金差額：新押金 > 原押金 → 開帳單補繳；新押金 < 原押金 → 多付記入預付款。
+// Body: { fromUnitId, toUnitId, newTenantCode?, newDeposit? }
 export async function POST(req: Request) {
   const a = await adminOnly();
   if ("response" in a) return a.response;
@@ -20,7 +27,10 @@ export async function POST(req: Request) {
 
   const oldCode = fromUnit.tenantCode;
   const newCode = String(b.newTenantCode || oldCode).trim();
-  const carryDeposit = b.carryDeposit !== false; // 預設攜帶押金
+  const oldDeposit = fromUnit.deposit;
+  // 新單位押金：預設沿用目標單位設定的押金；可由前端覆寫
+  const newDeposit = b.newDeposit !== undefined ? num(b.newDeposit) : toUnit.deposit;
+  const depositDiff = newDeposit - oldDeposit; // >0 需補繳；<0 多付退回（記預付款）
 
   // 若更改編號，確認不與其他在租單位衝突
   if (newCode !== oldCode) {
@@ -44,7 +54,7 @@ export async function POST(req: Request) {
     );
   }
 
-  // 目標單位接收租客（保留目標單位本身的地址/租金/管理費/水電錶）
+  // 目標單位接收租客（保留目標單位本身的地址/租金/管理費/水電錶），押金設為新押金
   ops.push(
     prisma.unit.update({
       where: { id: toUnit.id },
@@ -53,7 +63,7 @@ export async function POST(req: Request) {
         tenantName: fromUnit.tenantName,
         email: fromUnit.email,
         leaseEndDate: fromUnit.leaseEndDate,
-        deposit: carryDeposit ? fromUnit.deposit : toUnit.deposit,
+        deposit: newDeposit,
         contractFileUrl: fromUnit.contractFileUrl,
         memo: fromUnit.memo,
       },
@@ -65,18 +75,46 @@ export async function POST(req: Request) {
     prisma.unit.update({
       where: { id: fromUnit.id },
       data: {
-        tenantCode: "",
-        tenantName: "",
-        email: "",
-        leaseEndDate: "",
-        contractFileUrl: "",
-        memo: "",
-        ...(carryDeposit ? { deposit: 0 } : {}),
+        tenantCode: "", tenantName: "", email: "", leaseEndDate: "",
+        contractFileUrl: "", memo: "", deposit: 0,
       },
     })
   );
 
   await prisma.$transaction(ops);
+
+  // 押金差額結算
+  const cur = owner.currency;
+  let reconciliation: { type: string; amount: number } | null = null;
+  if (depositDiff > 0) {
+    // 需補繳：開立帳單
+    await createPayment({
+      ownerId: owner.id,
+      tenantCode: newCode,
+      docCategory: "帳單",
+      title: `轉租押金補差額（${fromUnit.address} → ${toUnit.address}）`,
+      totalAmount: depositDiff,
+      status: "未繳費",
+      currency: cur,
+      remark: `原押金 ${cur}${oldDeposit.toFixed(2)} → 新押金 ${cur}${newDeposit.toFixed(2)}，需補繳差額 ${cur}${depositDiff.toFixed(2)}`,
+    });
+    reconciliation = { type: "補繳", amount: depositDiff };
+  } else if (depositDiff < 0) {
+    // 多付：記入預付款
+    const over = Math.abs(depositDiff);
+    await createPayment({
+      ownerId: owner.id,
+      tenantCode: newCode,
+      docCategory: "預付款",
+      title: `轉租退回多付押金（${fromUnit.address} → ${toUnit.address}）`,
+      totalAmount: over,
+      paidAmount: over,
+      status: "已繳費",
+      currency: cur,
+      remark: `原押金 ${cur}${oldDeposit.toFixed(2)} → 新押金 ${cur}${newDeposit.toFixed(2)}，多付 ${cur}${over.toFixed(2)} 記入預付款`,
+    });
+    reconciliation = { type: "預付款", amount: over };
+  }
 
   return ok({
     from: fromUnit.address,
@@ -85,5 +123,9 @@ export async function POST(req: Request) {
     oldCode,
     newCode,
     rekeyed: newCode !== oldCode,
+    oldDeposit,
+    newDeposit,
+    depositDiff,
+    reconciliation,
   });
 }
