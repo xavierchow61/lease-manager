@@ -496,7 +496,7 @@ function UnitsTab({
 
       <ArchiveModal target={archiveTarget} onClose={() => setArchiveTarget(null)} call={call} />
       <ChecklistModal target={checklistTarget} onClose={() => setChecklistTarget(null)} />
-      <TransferModal source={transferTarget} vacantUnits={units.filter((x) => !x.tenantCode)} cur={user.currency} onClose={() => setTransferTarget(null)} call={call} />
+      <TransferModal source={transferTarget} vacantUnits={units.filter((x) => x.status === "空置中" && x.id !== transferTarget?.id)} cur={user.currency} onClose={() => setTransferTarget(null)} call={call} />
     </div>
   );
 }

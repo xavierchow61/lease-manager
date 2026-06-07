@@ -23,7 +23,7 @@ export async function POST(req: Request) {
   if (!toUnit || toUnit.ownerId !== owner.id) return fail("找不到目標單位", 404);
   if (fromUnit.id === toUnit.id) return fail("來源與目標不能是同一間");
   if (!fromUnit.tenantCode) return fail("來源單位目前沒有租客");
-  if (toUnit.tenantCode) return fail("目標單位已有租客，請先選擇空置單位");
+  if (toUnit.status === "出租中") return fail("目標單位目前出租中，請選擇空置單位");
 
   const oldCode = fromUnit.tenantCode;
   const newCode = String(b.newTenantCode || oldCode).trim();
@@ -35,7 +35,7 @@ export async function POST(req: Request) {
   // 若更改編號，確認不與其他在租單位衝突
   if (newCode !== oldCode) {
     const clash = await prisma.unit.findFirst({
-      where: { ownerId: owner.id, tenantCode: newCode, id: { not: fromUnit.id } },
+      where: { ownerId: owner.id, tenantCode: newCode, id: { notIn: [fromUnit.id, toUnit.id] } },
     });
     if (clash) return fail(`租客編號 ${newCode} 已被其他單位使用`);
   }
