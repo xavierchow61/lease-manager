@@ -262,7 +262,9 @@ function SettingsTab({ user, onUserChange, toast }: {
 
   return (
     <div className="p-4 md:p-8 space-y-5 max-w-2xl">
-      <h1 className="text-xl md:text-2xl font-bold text-slate-900 tracking-tight">設定</h1>
+      <div className="flex items-center justify-between gap-2 min-h-[40px]">
+        <h1 className="text-xl md:text-2xl font-bold text-slate-900 tracking-tight">設定</h1>
+      </div>
 
       {/* Account info */}
       <div className="card">
@@ -393,7 +395,7 @@ function UnitsTab({
 
   return (
     <div className="p-4 md:p-8 space-y-4">
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex items-center justify-between gap-2 min-h-[40px]">
         <h1 className="text-xl md:text-2xl font-bold text-slate-900 tracking-tight">單位與租客</h1>
         <button className="btn-primary" onClick={openAdd}>＋ 新增單位</button>
       </div>
@@ -776,7 +778,7 @@ function PaymentsTab({
 
   return (
     <div className="p-4 md:p-8 space-y-4">
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex items-center justify-between gap-2 min-h-[40px]">
         <h1 className="text-xl md:text-2xl font-bold text-slate-900 tracking-tight">收款管理</h1>
         <div className="flex gap-2">
           <button className="btn-ghost gap-1.5" onClick={() => setToolsModal(true)}><Wand2 size={16} /> 帳務工具</button>
@@ -1299,7 +1301,9 @@ function RepairsTab({ units, repairs, call }: {
 
   return (
     <div className="p-4 md:p-8 space-y-4">
-      <h1 className="text-xl md:text-2xl font-bold text-slate-900 tracking-tight">維修管理</h1>
+      <div className="flex items-center justify-between gap-2 min-h-[40px]">
+        <h1 className="text-xl md:text-2xl font-bold text-slate-900 tracking-tight">維修管理</h1>
+      </div>
       <div className="space-y-2">
         {repairs.map((r) => (
           <div key={r.id} className="card !p-4">
@@ -1417,7 +1421,7 @@ function ExpensesTab({ cur, expenses, call }: {
 
   return (
     <div className="p-4 md:p-8 space-y-5">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2 min-h-[40px]">
         <h1 className="text-xl md:text-2xl font-bold text-slate-900 tracking-tight">財務支出</h1>
         <button className="btn-primary gap-1.5" onClick={openAdd}><Plus size={16} /> 新增支出</button>
       </div>
@@ -1577,7 +1581,7 @@ function ReportsTab({ cur, units, payments, expenses }: {
 
   return (
     <div className="p-4 md:p-8 space-y-5">
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex items-center justify-between gap-2 min-h-[40px]">
         <h1 className="text-xl md:text-2xl font-bold text-slate-900 tracking-tight">財務報表</h1>
         <div className="flex gap-2">
           <button
@@ -1757,7 +1761,9 @@ function PlanTab({ user, tenantCount, call, onTierChange, toast }: {
   return (
     <div className="p-4 md:p-8 space-y-6">
       <div>
-        <h1 className="text-xl md:text-2xl font-bold text-slate-900 tracking-tight">方案與工具</h1>
+        <div className="flex items-center justify-between gap-2 min-h-[40px]">
+          <h1 className="text-xl md:text-2xl font-bold text-slate-900 tracking-tight">方案與工具</h1>
+        </div>
         <p className="text-sm text-slate-500 mt-0.5">目前方案：<span className="badge badge-indigo">{user.tier}</span> · 已管理 {tenantCount} 位租客</p>
       </div>
 
