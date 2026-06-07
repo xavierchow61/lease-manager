@@ -59,6 +59,7 @@ export async function POST(req: Request) {
     prisma.unit.update({
       where: { id: toUnit.id },
       data: {
+        status: "出租中",
         tenantCode: newCode,
         tenantName: fromUnit.tenantName,
         email: fromUnit.email,
@@ -75,6 +76,7 @@ export async function POST(req: Request) {
     prisma.unit.update({
       where: { id: fromUnit.id },
       data: {
+        status: "空置中",
         tenantCode: "", tenantName: "", email: "", leaseEndDate: "",
         contractFileUrl: "", memo: "", deposit: 0,
       },

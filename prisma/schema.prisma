@@ -37,6 +37,7 @@ model Account {
 model Unit {
   id              String   @id @default(cuid())
   ownerId         String   // Account.id of the owning admin
+  status          String   @default("空置中") // 出租中 | 空置中 | 維修中 | 自住
   tenantCode      String   @default("") // 租客ID — business code, blank when vacant
   tenantName      String   @default("")
   address         String   @default("")

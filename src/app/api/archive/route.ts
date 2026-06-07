@@ -41,6 +41,7 @@ export async function POST(req: Request) {
   await prisma.unit.update({
     where: { id: unit.id },
     data: {
+      status: "空置中",
       tenantCode: "",
       tenantName: "",
       email: "",

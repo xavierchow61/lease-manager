@@ -52,7 +52,7 @@ export default function AdminDashboard({ user, data, refresh, onLogout, onTierCh
   ];
 
   const { units, repairs, payments, expenses } = data;
-  const occupied = units.filter((u) => u.tenantName);
+  const occupied = units.filter((u) => u.status === "出租中");
   const tenantCount = units.filter((u) => u.tenantCode).length;
   const pendingPay = payments.filter((p) => p.status === "未繳費" || p.status === "部分繳費").length;
   const pendingRep = repairs.filter((r) => r.status !== "完成").length;
@@ -318,8 +318,13 @@ function Locked({ feature, need }: { feature: string; need: string }) {
 }
 
 // ── Units ─────────────────────────────────────────────────────────
+const UNIT_STATUSES = ["出租中", "空置中", "維修中", "自住"];
+const unitStatusBadge = (s: string) =>
+  s === "出租中" ? "badge-emerald" : s === "維修中" ? "badge-amber" : s === "自住" ? "badge-blue" : "badge-slate";
+
 const blankUnit = (cur: string) => ({
   id: "",
+  status: "空置中",
   tenantCode: "",
   tenantName: "",
   address: "",
@@ -358,9 +363,8 @@ function UnitsTab({
   const [transferTarget, setTransferTarget] = useState<Unit | null>(null);
 
   const filtered = units.filter((u) => {
-    if (filter === "出租中" && !u.tenantName) return false;
-    if (filter === "空置中" && u.tenantName) return false;
-    if (filter === "即將到期" && !(u.tenantName && isExpiringSoon(u.leaseEndDate))) return false;
+    if (["出租中", "空置中", "維修中", "自住"].includes(filter) && u.status !== filter) return false;
+    if (filter === "即將到期" && !(u.status === "出租中" && isExpiringSoon(u.leaseEndDate))) return false;
     if (search.trim()) {
       const q = search.trim().toLowerCase();
       return (u.address || "").toLowerCase().includes(q) || (u.tenantName || "").toLowerCase().includes(q);
@@ -415,12 +419,10 @@ function UnitsTab({
               <div className="min-w-0">
                 <div className="font-semibold text-slate-800">{u.address || "（未填地址）"}</div>
                 <div className="text-sm text-slate-500 mt-0.5">
-                  {u.tenantName ? `${u.tenantName} · ${u.tenantCode}` : "空置中"}
+                  {u.tenantName ? `${u.tenantName} · ${u.tenantCode}` : "（無租客）"}
                 </div>
               </div>
-              <span className={`badge ${u.tenantName ? "badge-emerald" : "badge-slate"}`}>
-                {u.tenantName ? "出租中" : "空置"}
-              </span>
+              <span className={`badge ${unitStatusBadge(u.status)}`}>{u.status || "空置中"}</span>
             </div>
             <div className="grid grid-cols-3 gap-2 mt-3 text-center">
               <div className="bg-slate-50 rounded-lg py-2">
@@ -469,6 +471,11 @@ function UnitsTab({
       >
         <div className="grid md:grid-cols-2 gap-3">
           <Field label="單位地址"><input className="input" value={String(form.address ?? "")} onChange={(e) => setForm({ ...form, address: e.target.value })} /></Field>
+          <Field label="出租狀態">
+            <select className="input" value={String(form.status ?? "空置中")} onChange={(e) => setForm({ ...form, status: e.target.value })}>
+              {UNIT_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </Field>
           <Field label="租客 ID（租客登入用）"><input className="input" value={String(form.tenantCode ?? "")} onChange={(e) => setForm({ ...form, tenantCode: e.target.value })} /></Field>
           <Field label="租客姓名"><input className="input" value={String(form.tenantName ?? "")} onChange={(e) => setForm({ ...form, tenantName: e.target.value })} /></Field>
           <Field label="租客 Email（自動開通帳號）"><input className="input" value={String(form.email ?? "")} onChange={(e) => setForm({ ...form, email: e.target.value })} /></Field>

@@ -31,6 +31,7 @@ export async function POST(req: Request) {
   const unit = await prisma.unit.create({
     data: {
       ownerId: owner.id,
+      status: body.status || (body.tenantCode ? "出租中" : "空置中"),
       tenantCode: body.tenantCode || "",
       tenantName: body.tenantName || "",
       address: body.address || "",

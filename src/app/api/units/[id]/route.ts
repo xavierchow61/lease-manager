@@ -28,6 +28,7 @@ export async function PUT(
   const unit = await prisma.unit.update({
     where: { id: params.id },
     data: {
+      status: body.status ?? existing.status,
       tenantCode: body.tenantCode ?? existing.tenantCode,
       tenantName: body.tenantName ?? existing.tenantName,
       address: body.address ?? existing.address,

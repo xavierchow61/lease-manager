@@ -14,6 +14,7 @@ export type User = {
 export type Unit = {
   id: string;
   ownerId: string;
+  status: string;
   tenantCode: string;
   tenantName: string;
   address: string;
