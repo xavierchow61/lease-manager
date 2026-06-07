@@ -389,7 +389,7 @@ function UnitsTab({
   return (
     <div className="p-4 md:p-8 space-y-4">
       <div className="flex items-center justify-between gap-2">
-        <h1 className="text-xl font-bold text-slate-800">單位與租客</h1>
+        <h1 className="text-xl md:text-2xl font-bold text-slate-900 tracking-tight">單位與租客</h1>
         <button className="btn-primary" onClick={openAdd}>＋ 新增單位</button>
       </div>
       <div className="flex gap-2 flex-wrap items-center">
@@ -1199,7 +1199,7 @@ function RepairsTab({ units, repairs, call }: {
 
   return (
     <div className="p-4 md:p-8 space-y-4">
-      <h1 className="text-xl font-bold text-slate-800">維修管理</h1>
+      <h1 className="text-xl md:text-2xl font-bold text-slate-900 tracking-tight">維修管理</h1>
       <div className="space-y-2">
         {repairs.map((r) => (
           <div key={r.id} className="card !p-4">
@@ -1611,7 +1611,7 @@ function PlanTab({ user, tenantCount, call, onTierChange, toast }: {
   return (
     <div className="p-4 md:p-8 space-y-6">
       <div>
-        <h1 className="text-xl font-bold text-slate-800">方案與工具</h1>
+        <h1 className="text-xl md:text-2xl font-bold text-slate-900 tracking-tight">方案與工具</h1>
         <p className="text-sm text-slate-500 mt-0.5">目前方案：<span className="badge badge-indigo">{user.tier}</span> · 已管理 {tenantCount} 位租客</p>
       </div>
 
