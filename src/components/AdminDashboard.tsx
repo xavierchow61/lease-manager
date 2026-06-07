@@ -59,8 +59,10 @@ export default function AdminDashboard({ user, data, refresh, onLogout, onTierCh
   const totalRent = occupied.reduce((s, u) => s + (u.monthlyRent || 0), 0);
   const expiring = occupied.filter((u) => isExpiringSoon(u.leaseEndDate));
 
-  // ── dashboard analytics ──
-  const realPays = payments.filter((p) => !["預付款", "預付款抵扣"].includes(p.docCategory));
+  // ── dashboard analytics ──（收入口徑：押金為保證金不計入，排除預付款/退租結算）
+  const realPays = payments.filter(
+    (p) => !["預付款", "預付款抵扣", "退租收據", "退租帳單"].includes(p.docCategory) && incomeCategory(p) !== "押金"
+  );
   const thisMonth = currentYM();
   const now = new Date();
   const trend = Array.from({ length: 12 }, (_, i) => {
@@ -901,13 +903,13 @@ function LedgerView({ payments, tenants, cur }: { payments: Payment[]; tenants: 
   const catBadge = (c: string) =>
     c === "預付款" ? "badge-indigo" : c === "收據" ? "badge-emerald" : c.includes("退租") ? "badge-amber" : "badge-slate";
 
-  // 已收的租金/費用明細：顯示每張帳單/收據的收款（含用預付款繳付的），
-  // 但不另外列「預付款」預收款本身（避免與它所繳付的帳單重複計算）；
-  // 也排除抵扣機制紀錄、退租結算、由押金抵扣的欠款。
+  // 已收的租金/費用明細（押金視為保證金，不計入收入）：
+  //  - 含每張帳單/收據的收款（包含用預付款或押金結清的租金/水電/管理費）
+  //  - 排除：押金（保證金）、預付款預收款、抵扣機制紀錄、退租結算（退押金）
   const received = payments.filter(
     (p) => p.paidAmount > 0
       && !["預付款", "預付款抵扣", "退租收據", "退租帳單"].includes(p.docCategory)
-      && !(p.remark || "").includes("退租時由押金抵扣")
+      && incomeCategory(p) !== "押金"
   );
   const months = Array.from(new Set(received.map((p) => toYM(p.receiptDate || p.createdDate)).filter(Boolean))).sort().reverse();
 
@@ -984,7 +986,7 @@ function LedgerView({ payments, tenants, cur }: { payments: Payment[]; tenants: 
           )}
         </table>
       </div>
-      <p className="text-xs text-slate-500">＊ 顯示每張帳單/收據的已收金額（含以預付款繳付者）；為避免重複計算，不另列「預付款」預收款本身與「預付款抵扣」機制紀錄，退租結算與押金抵扣的欠款亦不計入。</p>
+      <p className="text-xs text-slate-500">＊ 顯示已收的租金/水電/管理費等（含以預付款或押金結清者）。押金為保證金、不計入收入；預付款預收款、抵扣機制紀錄、退租退押金亦不列入。</p>
     </div>
   );
 }
@@ -1536,10 +1538,10 @@ function ReportsTab({ cur, units, payments, expenses }: {
   // 明細抽屜：點月度表某格時顯示組成該數字的單據/支出
   const [detail, setDetail] = useState<{ ym: string; label: string; cat: string } | null>(null);
 
-  // 收入口徑與「收款明細」一致：排除預付款/抵扣、退租結算（退押金為付出）、由押金抵扣結清的欠款
+  // 收入口徑與「收款明細」一致：排除預付款/抵扣與退租結算（退押金）；
+  // 押金為保證金，於下方加總時另行排除（不計入收入），但保留以顯示「押金」欄。
   const realPays = payments.filter(
     (p) => !["預付款", "預付款抵扣", "退租收據", "退租帳單"].includes(p.docCategory)
-      && !(p.remark || "").includes("退租時由押金抵扣")
   );
 
   // 12-month breakdown
@@ -1554,7 +1556,8 @@ function ReportsTab({ cur, units, payments, expenses }: {
     const mgmt = byCat("管理費");
     const utility = byCat("水電費");
     const repairFee = byCat("維修費");
-    const paid = mp.reduce((s, p) => s + p.paidAmount, 0);
+    // 淨額用「已收」基礎，但押金為保證金不計入收入
+    const paid = mp.filter((p) => incomeCategory(p) !== "押金").reduce((s, p) => s + p.paidAmount, 0);
     const expense = expenses.filter((e) => (e.date || "").startsWith(ym)).reduce((s, e) => s + e.amount, 0);
     return { ym, month: `${parseInt(m)}月`, rent, deposit, mgmt, utility, repairFee, paid, expense, net: paid - expense };
   });
@@ -1563,7 +1566,8 @@ function ReportsTab({ cur, units, payments, expenses }: {
   const yp = realPays.filter((p) => (p.period || "").startsWith(`${year}-`));
   const sum = (c: string) => yp.filter((p) => incomeCategory(p) === c).reduce((s, p) => s + p.paidAmount, 0);
   const rent = sum("租金"), deposit = sum("押金"), mgmt = sum("管理費"), utility = sum("水電費"), repairFee = sum("維修費");
-  const totalIncome = rent + deposit + mgmt + utility + repairFee;
+  // 押金為保證金，不計入年總收入
+  const totalIncome = rent + mgmt + utility + repairFee;
   const yearExpenses = expenses.filter((e) => (e.date || "").startsWith(String(year)));
   const totalExpense = yearExpenses.reduce((s, e) => s + e.amount, 0);
   const net = totalIncome - totalExpense;
@@ -1576,7 +1580,7 @@ function ReportsTab({ cur, units, payments, expenses }: {
 
   const cards: { label: string; value: number; cls: string }[] = [
     { label: "租金", value: rent, cls: "text-indigo-600" },
-    { label: "押金", value: deposit, cls: "text-teal-600" },
+    { label: "押金(保證金)", value: deposit, cls: "text-teal-600" },
     { label: "管理費", value: mgmt, cls: "text-amber-600" },
     { label: "水電費", value: utility, cls: "text-sky-600" },
     { label: "維修費", value: repairFee, cls: "text-orange-600" },
@@ -1652,7 +1656,7 @@ function ReportsTab({ cur, units, payments, expenses }: {
           </tbody>
         </table>
       </div>
-      <p className="text-xs text-slate-400">＊ 收入卡片與年度淨利以「已收金額」計算；月度表的收入欄位顯示「應收總額」、淨額以「實收−支出」計算（與原系統一致）。</p>
+      <p className="text-xs text-slate-400">＊ 押金為保證金，不計入年總收入與淨額（僅於「押金」欄顯示）。年總收入/淨額以「已收金額」計算；月度收入欄顯示「應收總額」、淨額以「實收−支出」計算。</p>
 
       {/* 支出按性質（分類） */}
       <div className="card">
