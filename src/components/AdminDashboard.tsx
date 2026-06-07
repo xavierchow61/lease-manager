@@ -214,7 +214,7 @@ export default function AdminDashboard({ user, data, refresh, onLogout, onTierCh
       {tab === "expenses" && (
         limits.expenses ? <ExpensesTab cur={cur} expenses={expenses} call={call} /> : <Locked feature="財務支出" need="Max" />
       )}
-      {tab === "reports" && <ReportsTab cur={cur} payments={payments} expenses={expenses} />}
+      {tab === "reports" && <ReportsTab cur={cur} units={units} payments={payments} expenses={expenses} />}
       {tab === "plan" && (
         <PlanTab user={user} tenantCount={tenantCount} call={call} onTierChange={onTierChange} toast={toast} />
       )}
@@ -1520,12 +1520,15 @@ function ExpensesTab({ cur, expenses, call }: {
 }
 
 // ── Reports ───────────────────────────────────────────────────────
-function ReportsTab({ cur, payments, expenses }: {
-  cur: string; payments: Payment[]; expenses: import("@/lib/client").Expense[];
+function ReportsTab({ cur, units, payments, expenses }: {
+  cur: string; units: Unit[]; payments: Payment[]; expenses: import("@/lib/client").Expense[];
 }) {
   const thisYear = new Date().getFullYear();
   const [year, setYear] = useState(thisYear);
   const years = Array.from({ length: 5 }, (_, i) => thisYear - i);
+  const tenantName = (code: string) => units.find((u) => u.tenantCode === code)?.tenantName || code;
+  // 明細抽屜：點月度表某格時顯示組成該數字的單據/支出
+  const [detail, setDetail] = useState<{ ym: string; label: string; cat: string } | null>(null);
 
   const realPays = payments.filter((p) => !["預付款", "預付款抵扣"].includes(p.docCategory));
 
@@ -1543,7 +1546,7 @@ function ReportsTab({ cur, payments, expenses }: {
     const repairFee = byCat("維修費");
     const paid = mp.reduce((s, p) => s + p.paidAmount, 0);
     const expense = expenses.filter((e) => (e.date || "").startsWith(ym)).reduce((s, e) => s + e.amount, 0);
-    return { month: `${parseInt(m)}月`, rent, deposit, mgmt, utility, repairFee, paid, expense, net: paid - expense };
+    return { ym, month: `${parseInt(m)}月`, rent, deposit, mgmt, utility, repairFee, paid, expense, net: paid - expense };
   });
 
   // annual summary (paid basis)
@@ -1624,12 +1627,12 @@ function ReportsTab({ cur, payments, expenses }: {
             {rows.filter((r) => r.rent || r.mgmt || r.deposit || r.utility || r.repairFee || r.expense).map((r) => (
               <tr key={r.month} className="border-b border-slate-50">
                 <td className="px-4 py-2.5 text-slate-600">{r.month}</td>
-                <td className="px-3 py-2.5 text-right text-indigo-600">{r.rent ? fmtNum(r.rent) : "—"}</td>
-                <td className="px-3 py-2.5 text-right text-amber-600">{r.mgmt ? fmtNum(r.mgmt) : "—"}</td>
-                <td className="px-3 py-2.5 text-right text-teal-600">{r.deposit ? fmtNum(r.deposit) : "—"}</td>
-                <td className="px-3 py-2.5 text-right text-sky-600">{r.utility ? fmtNum(r.utility) : "—"}</td>
-                <td className="px-3 py-2.5 text-right text-orange-600">{r.repairFee ? fmtNum(r.repairFee) : "—"}</td>
-                <td className="px-3 py-2.5 text-right text-red-500">{r.expense ? fmtNum(r.expense) : "—"}</td>
+                <DrillCell val={r.rent} cls="text-indigo-600" onClick={() => setDetail({ ym: r.ym, label: r.month, cat: "租金" })} />
+                <DrillCell val={r.mgmt} cls="text-amber-600" onClick={() => setDetail({ ym: r.ym, label: r.month, cat: "管理費" })} />
+                <DrillCell val={r.deposit} cls="text-teal-600" onClick={() => setDetail({ ym: r.ym, label: r.month, cat: "押金" })} />
+                <DrillCell val={r.utility} cls="text-sky-600" onClick={() => setDetail({ ym: r.ym, label: r.month, cat: "水電費" })} />
+                <DrillCell val={r.repairFee} cls="text-orange-600" onClick={() => setDetail({ ym: r.ym, label: r.month, cat: "維修費" })} />
+                <DrillCell val={r.expense} cls="text-red-500" onClick={() => setDetail({ ym: r.ym, label: r.month, cat: "支出" })} />
                 <td className={`px-4 py-2.5 text-right font-semibold ${r.net >= 0 ? "text-emerald-600" : "text-red-500"}`}>{fmtNum(r.net)}</td>
               </tr>
             ))}
@@ -1683,7 +1686,50 @@ function ReportsTab({ cur, payments, expenses }: {
           </div>
         )}
       </div>
+
+      {/* 明細抽屜 */}
+      {detail && (() => {
+        const isExpense = detail.cat === "支出";
+        const basisPaid = detail.cat === "押金";
+        const items = isExpense
+          ? expenses.filter((e) => (e.date || "").startsWith(detail.ym)).map((e) => ({ name: e.item || "（未填項目）", sub: e.category, amount: e.amount, extra: e.remark }))
+          : realPays.filter((p) => p.period === detail.ym && incomeCategory(p) === detail.cat).map((p) => ({ name: p.title, sub: tenantName(p.tenantCode), amount: basisPaid ? p.paidAmount : p.totalAmount, extra: p.status }));
+        const total = items.reduce((s, x) => s + x.amount, 0);
+        const basisNote = isExpense ? "支出金額加總" : basisPaid ? "以「已付金額」加總" : "以「應收總額」加總";
+        return (
+          <Modal open onClose={() => setDetail(null)} title={`${detail.label} · ${detail.cat} 明細`} wide>
+            <p className="text-xs text-slate-500 mb-3">此數字 = 下列 {items.length} 筆{isExpense ? "支出" : "單據"}{basisNote}。</p>
+            <div className="space-y-1.5">
+              {items.map((x, i) => (
+                <div key={i} className="flex items-center justify-between gap-2 bg-slate-50 rounded-lg px-3 py-2">
+                  <div className="min-w-0">
+                    <div className="text-sm text-slate-800 truncate">{x.name}</div>
+                    <div className="text-[11px] text-slate-400">{x.sub}{x.extra ? ` · ${x.extra}` : ""}</div>
+                  </div>
+                  <span className="text-sm font-semibold tnum shrink-0">{fmtMoney(x.amount, cur)}</span>
+                </div>
+              ))}
+              {items.length === 0 && <div className="text-center text-slate-400 py-6 text-sm">沒有明細</div>}
+            </div>
+            <div className="flex justify-between font-bold pt-3 mt-2 border-t border-slate-200">
+              <span className="text-slate-700">合計</span>
+              <span className="tnum">{fmtMoney(total, cur)}</span>
+            </div>
+          </Modal>
+        );
+      })()}
     </div>
+  );
+}
+
+function DrillCell({ val, cls, onClick }: { val: number; cls: string; onClick: () => void }) {
+  if (!val) return <td className="px-3 py-2.5 text-right text-slate-300">—</td>;
+  return (
+    <td className="px-3 py-2.5 text-right">
+      <button onClick={onClick} className={`${cls} hover:underline underline-offset-2 decoration-dotted tnum`} title="點看明細">
+        {fmtNum(val)}
+      </button>
+    </td>
   );
 }
 
