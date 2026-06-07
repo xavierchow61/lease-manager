@@ -899,10 +899,12 @@ function LedgerView({ payments, tenants, cur }: { payments: Payment[]; tenants: 
   const catBadge = (c: string) =>
     c === "預付款" ? "badge-indigo" : c === "收據" ? "badge-emerald" : c.includes("退租") ? "badge-amber" : "badge-slate";
 
-  // 實際收到的現金：排除預付款抵扣、退租結算單（退押金為付出）、及退租時由押金抵扣的欠款
+  // 已收的租金/費用明細：顯示每張帳單/收據的收款（含用預付款繳付的），
+  // 但不另外列「預付款」預收款本身（避免與它所繳付的帳單重複計算）；
+  // 也排除抵扣機制紀錄、退租結算、由押金抵扣的欠款。
   const received = payments.filter(
     (p) => p.paidAmount > 0
-      && !["預付款抵扣", "退租收據", "退租帳單"].includes(p.docCategory)
+      && !["預付款", "預付款抵扣", "退租收據", "退租帳單"].includes(p.docCategory)
       && !(p.remark || "").includes("退租時由押金抵扣")
   );
   const months = Array.from(new Set(received.map((p) => toYM(p.receiptDate || p.createdDate)).filter(Boolean))).sort().reverse();
@@ -980,7 +982,7 @@ function LedgerView({ payments, tenants, cur }: { payments: Payment[]; tenants: 
           )}
         </table>
       </div>
-      <p className="text-xs text-slate-500">＊ 顯示所有實際收到的款項（含部分收款、收據、預付款）；「預付款抵扣」為使用既有餘額，不重複計入。</p>
+      <p className="text-xs text-slate-500">＊ 顯示每張帳單/收據的已收金額（含以預付款繳付者）；為避免重複計算，不另列「預付款」預收款本身與「預付款抵扣」機制紀錄，退租結算與押金抵扣的欠款亦不計入。</p>
     </div>
   );
 }

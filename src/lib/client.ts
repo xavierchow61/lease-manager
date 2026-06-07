@@ -56,6 +56,7 @@ export type Payment = {
   paidAmount: number;
   receiptDate: string;
   status: string;
+  relatedDocId: string;
   currency: string;
   invoiceNumber: string;
   remark: string;
