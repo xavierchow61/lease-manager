@@ -662,6 +662,10 @@ function PaymentsTab({
     return true;
   });
 
+  // 目前篩選下的尚欠總額（未繳 + 部分繳費的欠款加總）
+  const unpaidFiltered = filtered.filter((p) => p.status !== "已繳費" && !["預付款", "預付款抵扣"].includes(p.docCategory));
+  const filteredOwing = unpaidFiltered.reduce((s, p) => s + Math.max(p.totalAmount - p.paidAmount, 0), 0);
+
   const tenantName = (code: string) => units.find((u) => u.tenantCode === code)?.tenantName || code;
 
   // Prepayment balance per tenant = Σ預付款 − Σ預付款抵扣.
@@ -724,6 +728,15 @@ function PaymentsTab({
           >
             一鍵抵扣全部未繳
           </button>
+        </div>
+      )}
+
+      {unpaidFiltered.length > 0 && (
+        <div className="card !p-3 bg-red-50 border border-red-100 flex items-center justify-between">
+          <span className="text-sm text-red-700 flex items-center gap-1.5">
+            <AlertTriangle size={15} /> 尚欠總額（{unpaidFiltered.length} 筆未結清{tenantFilter !== "全部" ? ` · ${tenantName(tenantFilter)}` : ""}）
+          </span>
+          <span className="font-bold text-red-600 tnum">{fmtMoney(filteredOwing, cur)}</span>
         </div>
       )}
 
