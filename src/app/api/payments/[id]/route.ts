@@ -64,11 +64,11 @@ export async function PUT(
     return ok({ payment: updated, applied: add });
   }
 
-  // default: set status; mark-paid auto-fills paid amount + receipt date
+  // default: set status; 標記繳清 → 已付補到總額（即使原本已部分繳費），收齊餘額
   const status = body.status || p.status;
   const data: Record<string, unknown> = { status };
   if (status === "已繳費") {
-    if (!p.paidAmount) data.paidAmount = p.totalAmount;
+    if (p.paidAmount < p.totalAmount) data.paidAmount = p.totalAmount;
     if (!p.receiptDate) data.receiptDate = dateStr();
   }
   const updated = await prisma.payment.update({ where: { id: p.id }, data });
