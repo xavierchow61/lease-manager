@@ -355,6 +355,7 @@ function UnitsTab({
   const [form, setForm] = useState<Record<string, unknown>>(blankUnit(user.currency));
   const [archiveTarget, setArchiveTarget] = useState<Unit | null>(null);
   const [checklistTarget, setChecklistTarget] = useState<Unit | null>(null);
+  const [transferTarget, setTransferTarget] = useState<Unit | null>(null);
 
   const filtered = units.filter((u) => {
     if (filter === "出租中" && !u.tenantName) return false;
@@ -437,12 +438,13 @@ function UnitsTab({
                 </div>
               </div>
             </div>
-            <div className="flex gap-2 mt-3">
-              <button className="btn-ghost flex-1 !py-2 text-sm" onClick={() => openEdit(u)}>編輯</button>
+            <div className={`grid ${u.tenantName ? "grid-cols-2" : "grid-cols-1"} gap-2 mt-3`}>
+              <button className="btn-ghost !py-2 text-sm" onClick={() => openEdit(u)}>編輯</button>
               {u.tenantName && (
                 <>
-                  <button className="btn-ghost flex-1 !py-2 text-sm" onClick={() => setChecklistTarget(u)}>入退住清單</button>
-                  <button className="btn-ghost flex-1 !py-2 text-sm" onClick={() => setArchiveTarget(u)}>退租封存</button>
+                  <button className="btn-ghost !py-2 text-sm" onClick={() => setTransferTarget(u)}>轉租</button>
+                  <button className="btn-ghost !py-2 text-sm" onClick={() => setChecklistTarget(u)}>入退住清單</button>
+                  <button className="btn-ghost !py-2 text-sm" onClick={() => setArchiveTarget(u)}>退租封存</button>
                 </>
               )}
             </div>
@@ -487,6 +489,7 @@ function UnitsTab({
 
       <ArchiveModal target={archiveTarget} onClose={() => setArchiveTarget(null)} call={call} />
       <ChecklistModal target={checklistTarget} onClose={() => setChecklistTarget(null)} />
+      <TransferModal source={transferTarget} vacantUnits={units.filter((x) => !x.tenantCode)} cur={user.currency} onClose={() => setTransferTarget(null)} call={call} />
     </div>
   );
 }
@@ -625,6 +628,69 @@ function ArchiveModal({
           </select>
         </Field>
         <Field label="備註"><textarea className="input" rows={2} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></Field>
+      </div>
+    </Modal>
+  );
+}
+
+// ── 轉租：把租客轉到另一間空置單位 ──────────────────────────────────
+function TransferModal({ source, vacantUnits, cur, onClose, call }: {
+  source: Unit | null; vacantUnits: Unit[]; cur: string; onClose: () => void;
+  call: (p: string, m: "POST" | "PUT" | "DELETE", b?: unknown, ok?: string) => Promise<boolean>;
+}) {
+  const [toUnitId, setToUnitId] = useState("");
+  const [newCode, setNewCode] = useState("");
+  const [carryDeposit, setCarryDeposit] = useState(true);
+
+  useEffect(() => {
+    if (source) { setToUnitId(""); setNewCode(source.tenantCode); setCarryDeposit(true); }
+  }, [source]);
+
+  if (!source) return null;
+  const target = vacantUnits.find((u) => u.id === toUnitId);
+
+  return (
+    <Modal open={!!source} onClose={onClose} title={`轉租 — ${source.tenantName}`} footer={
+      <>
+        <button className="btn-ghost" onClick={onClose}>取消</button>
+        <button className="btn-primary" disabled={!toUnitId} onClick={async () => {
+          const ok = await call("units/transfer", "POST", { fromUnitId: source.id, toUnitId, newTenantCode: newCode, carryDeposit }, "轉租完成");
+          if (ok) onClose();
+        }}>確認轉租</button>
+      </>
+    }>
+      <div className="space-y-3">
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm">
+          <div className="text-slate-500 text-xs mb-1">目前</div>
+          <div className="font-medium text-slate-800">{source.tenantName}（{source.tenantCode}）</div>
+          <div className="text-slate-500">{source.address}</div>
+        </div>
+
+        <Field label="轉到哪一間（空置單位）">
+          <select className="input" value={toUnitId} onChange={(e) => setToUnitId(e.target.value)}>
+            <option value="">請選擇…</option>
+            {vacantUnits.map((u) => <option key={u.id} value={u.id}>{u.address || "（未填地址）"}</option>)}
+          </select>
+        </Field>
+        {vacantUnits.length === 0 && <p className="text-xs text-amber-600">目前沒有空置單位，請先新增一間空置單位作為目標。</p>}
+
+        <Field label="租客編號">
+          <input className="input" value={newCode} onChange={(e) => setNewCode(e.target.value)} />
+        </Field>
+        <p className="text-[11px] text-slate-500 -mt-1">
+          保留原編號 → 所有帳單/押金/維修記錄自動跟隨；改成新編號（例如配合新房號）→ 系統會一併更新相關記錄與登入帳號。
+        </p>
+
+        <label className="flex items-center gap-2 text-sm text-slate-600">
+          <input type="checkbox" checked={carryDeposit} onChange={(e) => setCarryDeposit(e.target.checked)} />
+          押金一併轉到新單位（{fmtMoney(source.deposit, cur)}）
+        </label>
+
+        {target && (
+          <div className="rounded-xl border border-indigo-100 bg-indigo-50 p-3 text-sm text-indigo-800">
+            轉租後：<b>{source.tenantName}</b> 將入住「{target.address}」，新單位月租 <b>{fmtMoney(target.monthlyRent, cur)}</b>；原單位「{source.address}」轉為空置。
+          </div>
+        )}
       </div>
     </Modal>
   );
