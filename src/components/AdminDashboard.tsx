@@ -1565,9 +1565,15 @@ function ReportsTab({ cur, units, payments, expenses }: {
   // annual summary (paid basis)
   const yp = realPays.filter((p) => (p.period || "").startsWith(`${year}-`));
   const sum = (c: string) => yp.filter((p) => incomeCategory(p) === c).reduce((s, p) => s + p.paidAmount, 0);
-  const rent = sum("租金"), deposit = sum("押金"), mgmt = sum("管理費"), utility = sum("水電費"), repairFee = sum("維修費");
+  const rent = sum("租金"), mgmt = sum("管理費"), utility = sum("水電費"), repairFee = sum("維修費");
   // 押金為保證金，不計入年總收入
   const totalIncome = rent + mgmt + utility + repairFee;
+
+  // 押金（保證金）結餘 = 收到 − 用於結清欠款（已轉收入）− 已退還（餘額、全期）
+  const depReceived = payments.filter((p) => incomeCategory(p) === "押金" && !["退租收據", "退租帳單"].includes(p.docCategory)).reduce((s, p) => s + p.paidAmount, 0);
+  const depUsed = payments.filter((p) => (p.remark || "").includes("退租時由押金抵扣")).reduce((s, p) => s + p.paidAmount, 0);
+  const depRefunded = payments.filter((p) => p.docCategory === "退租收據").reduce((s, p) => s + p.paidAmount, 0);
+  const depositHeld = depReceived - depUsed - depRefunded;
   const yearExpenses = expenses.filter((e) => (e.date || "").startsWith(String(year)));
   const totalExpense = yearExpenses.reduce((s, e) => s + e.amount, 0);
   const net = totalIncome - totalExpense;
@@ -1579,8 +1585,8 @@ function ReportsTab({ cur, units, payments, expenses }: {
     .sort((a, b) => b.amount - a.amount);
 
   const cards: { label: string; value: number; cls: string }[] = [
+    { label: "押金結餘(在持保證金)", value: depositHeld, cls: "text-teal-600" },
     { label: "租金", value: rent, cls: "text-indigo-600" },
-    { label: "押金(保證金)", value: deposit, cls: "text-teal-600" },
     { label: "管理費", value: mgmt, cls: "text-amber-600" },
     { label: "水電費", value: utility, cls: "text-sky-600" },
     { label: "維修費", value: repairFee, cls: "text-orange-600" },
