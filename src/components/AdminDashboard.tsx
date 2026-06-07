@@ -1536,7 +1536,11 @@ function ReportsTab({ cur, units, payments, expenses }: {
   // 明細抽屜：點月度表某格時顯示組成該數字的單據/支出
   const [detail, setDetail] = useState<{ ym: string; label: string; cat: string } | null>(null);
 
-  const realPays = payments.filter((p) => !["預付款", "預付款抵扣"].includes(p.docCategory));
+  // 收入口徑與「收款明細」一致：排除預付款/抵扣、退租結算（退押金為付出）、由押金抵扣結清的欠款
+  const realPays = payments.filter(
+    (p) => !["預付款", "預付款抵扣", "退租收據", "退租帳單"].includes(p.docCategory)
+      && !(p.remark || "").includes("退租時由押金抵扣")
+  );
 
   // 12-month breakdown
   const rows = Array.from({ length: 12 }, (_, i) => {
