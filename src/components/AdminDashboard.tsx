@@ -11,7 +11,7 @@ import { api, type User, type AllData, type Unit, type Payment } from "@/lib/cli
 import { fmtMoney, fmtNum, todayISO, currentYM, incomeCategory, CURRENCY_OPTIONS } from "@/lib/money";
 import { downloadCSV } from "@/lib/csv";
 import { tierLimits, PLAN_INFO, type Tier } from "@/lib/tiers";
-import { useToast, Modal, Stat, Field } from "./ui";
+import { useToast, Modal, Stat, Field, RepairPhoto } from "./ui";
 import Shell, { type Tab } from "./Shell";
 
 const payBadge = (s: string) =>
@@ -95,7 +95,8 @@ export default function AdminDashboard({ user, data, refresh, onLogout, onTierCh
       return false;
     }
     if (okMsg) toast(okMsg, "success");
-    await refresh();
+    // 背景更新列表（不阻塞 UI）— 儲存後畫面立即回應，感覺更快
+    refresh();
     return true;
   }
 
@@ -1318,11 +1319,8 @@ function RepairsTab({ units, repairs, call }: {
               </div>
               <span className={`badge ${repBadge(r.status)}`}>{r.status}</span>
             </div>
-            {r.photoUrl && (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={r.photoUrl} alt="維修照片" className="mt-2 rounded-lg max-h-40 object-cover" />
-            )}
-            <button className="btn-ghost mt-2 !py-2 text-sm" onClick={() => { setSel(r); setStatus(r.status); setReply(r.ownerReply); }}>處理 / 回覆</button>
+            <RepairPhoto repairId={r.id} hasPhoto={r.hasPhoto} />
+            <div><button className="btn-ghost mt-2 !py-2 text-sm" onClick={() => { setSel(r); setStatus(r.status); setReply(r.ownerReply); }}>處理 / 回覆</button></div>
           </div>
         ))}
         {repairs.length === 0 && <div className="text-center text-slate-400 py-12">目前沒有維修申請。</div>}
@@ -1593,6 +1591,17 @@ function ReportsTab({ cur, units, payments, expenses }: {
     { label: "支出", value: -totalExpense, cls: "text-red-500" },
   ];
 
+  // 月度表：只顯示有數字的欄位（手機上更窄、少橫向捲動）
+  const visRows = rows.filter((r) => r.rent || r.mgmt || r.deposit || r.utility || r.repairFee || r.expense);
+  const amountCols = ([
+    { key: "rent", label: "租金", cat: "租金", cls: "text-indigo-600" },
+    { key: "mgmt", label: "管理費", cat: "管理費", cls: "text-amber-600" },
+    { key: "deposit", label: "押金", cat: "押金", cls: "text-teal-600" },
+    { key: "utility", label: "水電", cat: "水電費", cls: "text-sky-600" },
+    { key: "repairFee", label: "維修", cat: "維修費", cls: "text-orange-600" },
+    { key: "expense", label: "支出", cat: "支出", cls: "text-red-500" },
+  ] as const).filter((c) => visRows.some((r) => (r as unknown as Record<string, number>)[c.key]));
+
   return (
     <div className="p-4 md:p-8 space-y-5">
       <div className="flex items-center justify-between gap-2 min-h-[40px]">
@@ -1633,31 +1642,23 @@ function ReportsTab({ cur, units, payments, expenses }: {
         <table className="w-full text-sm whitespace-nowrap">
           <thead>
             <tr className="text-slate-400 text-xs border-b border-slate-100">
-              <th className="text-left px-4 py-2.5 font-medium">月份</th>
-              <th className="text-right px-3 py-2.5 font-medium">租金</th>
-              <th className="text-right px-3 py-2.5 font-medium">管理費</th>
-              <th className="text-right px-3 py-2.5 font-medium">押金</th>
-              <th className="text-right px-3 py-2.5 font-medium">水電</th>
-              <th className="text-right px-3 py-2.5 font-medium">維修</th>
-              <th className="text-right px-3 py-2.5 font-medium">支出</th>
-              <th className="text-right px-4 py-2.5 font-medium">淨額</th>
+              <th className="text-left px-3 py-2.5 font-medium sticky left-0 bg-white">月份</th>
+              {amountCols.map((c) => <th key={c.key} className="text-right px-3 py-2.5 font-medium">{c.label}</th>)}
+              <th className="text-right px-3 py-2.5 font-medium">淨額</th>
             </tr>
           </thead>
           <tbody>
-            {rows.filter((r) => r.rent || r.mgmt || r.deposit || r.utility || r.repairFee || r.expense).map((r) => (
+            {visRows.map((r) => (
               <tr key={r.month} className="border-b border-slate-50">
-                <td className="px-4 py-2.5 text-slate-600">{r.month}</td>
-                <DrillCell val={r.rent} cls="text-indigo-600" onClick={() => setDetail({ ym: r.ym, label: r.month, cat: "租金" })} />
-                <DrillCell val={r.mgmt} cls="text-amber-600" onClick={() => setDetail({ ym: r.ym, label: r.month, cat: "管理費" })} />
-                <DrillCell val={r.deposit} cls="text-teal-600" onClick={() => setDetail({ ym: r.ym, label: r.month, cat: "押金" })} />
-                <DrillCell val={r.utility} cls="text-sky-600" onClick={() => setDetail({ ym: r.ym, label: r.month, cat: "水電費" })} />
-                <DrillCell val={r.repairFee} cls="text-orange-600" onClick={() => setDetail({ ym: r.ym, label: r.month, cat: "維修費" })} />
-                <DrillCell val={r.expense} cls="text-red-500" onClick={() => setDetail({ ym: r.ym, label: r.month, cat: "支出" })} />
-                <td className={`px-4 py-2.5 text-right font-semibold ${r.net >= 0 ? "text-emerald-600" : "text-red-500"}`}>{fmtNum(r.net)}</td>
+                <td className="px-3 py-2.5 text-slate-600 sticky left-0 bg-white">{r.month}</td>
+                {amountCols.map((c) => (
+                  <DrillCell key={c.key} val={(r as unknown as Record<string, number>)[c.key]} cls={c.cls} onClick={() => setDetail({ ym: r.ym, label: r.month, cat: c.cat })} />
+                ))}
+                <td className={`px-3 py-2.5 text-right font-semibold ${r.net >= 0 ? "text-emerald-600" : "text-red-500"}`}>{fmtNum(r.net)}</td>
               </tr>
             ))}
-            {rows.every((r) => !(r.rent || r.mgmt || r.deposit || r.utility || r.repairFee || r.expense)) && (
-              <tr><td colSpan={8} className="text-center text-slate-400 py-10">{year} 年尚無財務記錄</td></tr>
+            {visRows.length === 0 && (
+              <tr><td colSpan={amountCols.length + 2} className="text-center text-slate-400 py-10">{year} 年尚無財務記錄</td></tr>
             )}
           </tbody>
         </table>

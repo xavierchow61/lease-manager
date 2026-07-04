@@ -40,6 +40,7 @@ export type Repair = {
   applyDate: string;
   description: string;
   photoUrl: string;
+  hasPhoto?: boolean;
   status: string;
   ownerReply: string;
 };

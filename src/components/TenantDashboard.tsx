@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Home, Wallet, Wrench, Plus, Banknote } from "lucide-react";
 import { api, type User, type AllData } from "@/lib/client";
 import { fmtMoney, fmtNum, todayISO } from "@/lib/money";
-import { useToast, Modal, Stat, Field } from "./ui";
+import { useToast, Modal, Stat, Field, RepairPhoto } from "./ui";
 import Shell, { type Tab } from "./Shell";
 
 const payBadge = (s: string) =>
@@ -55,7 +55,7 @@ export default function TenantDashboard({
     if (!r.success) return toast(r.message || "失敗", "error");
     toast("已送出維修申請", "success");
     setDesc(""); setPhoto(""); setRepairModal(false);
-    await refresh();
+    refresh(); // 背景更新，不阻塞
   }
 
   function onPhoto(e: React.ChangeEvent<HTMLInputElement>) {
@@ -143,10 +143,7 @@ export default function TenantDashboard({
                 </div>
                 <span className={`badge ${repBadge(r.status)}`}>{r.status}</span>
               </div>
-              {r.photoUrl && (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={r.photoUrl} alt="維修照片" className="mt-2 rounded-lg max-h-40 object-cover" />
-              )}
+              <RepairPhoto repairId={r.id} hasPhoto={r.hasPhoto} />
             </div>
           ))}
           {repairs.length === 0 && <div className="text-center text-slate-400 py-12">尚無維修記錄。</div>}

@@ -140,3 +140,30 @@ export function Field({
     </div>
   );
 }
+
+// Lazy-loaded repair photo — kept out of the main data payload for speed.
+export function RepairPhoto({ repairId, hasPhoto }: { repairId: string; hasPhoto?: boolean }) {
+  const [src, setSrc] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  if (!hasPhoto) return null;
+
+  async function load() {
+    setLoading(true);
+    try {
+      const r = await fetch(`/api/repairs/${repairId}/photo`).then((x) => x.json());
+      if (r.success && r.photoUrl) setSrc(r.photoUrl);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  if (src) {
+    // eslint-disable-next-line @next/next/no-img-element
+    return <img src={src} alt="維修照片" className="mt-2 rounded-lg max-h-40 object-cover" />;
+  }
+  return (
+    <button onClick={load} disabled={loading} className="mt-2 text-xs px-2.5 py-1.5 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200">
+      {loading ? "載入中…" : "🖼 查看照片"}
+    </button>
+  );
+}
