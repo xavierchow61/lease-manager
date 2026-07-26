@@ -57,7 +57,7 @@ export async function POST(req: Request) {
       tenantCode: r.tenantCode,
       period: ym,
       docCategory: "帳單",
-      title: `${displayMonth(ym)}水電費（水 ${waterUsage.toFixed(1)} 噸 / 電 ${elecUsage.toFixed(1)} 度）`,
+      title: `${displayMonth(ym)}水電費`,
       totalAmount: total,
       status: "未繳費",
       currency: cur,

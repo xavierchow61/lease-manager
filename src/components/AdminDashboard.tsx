@@ -19,6 +19,9 @@ const payBadge = (s: string) =>
 const repBadge = (s: string) =>
   s === "完成" ? "badge-emerald" : s === "處理中" ? "badge-blue" : s === "已安排" ? "badge-indigo" : "badge-amber";
 
+const displayPaymentTitle = (p: Pick<Payment, "title" | "docCategory">) =>
+  incomeCategory(p) === "水電費" ? (p.title || "").replace(/（水 .*?）$/, "") : p.title;
+
 function isExpiringSoon(d: string) {
   if (!d) return false;
   const diff = (new Date(d).getTime() - Date.now()) / 86400000;
@@ -1026,7 +1029,7 @@ function PaymentGroup({
             return (
               <tr key={p.id} className="border-b border-slate-50 hover:bg-slate-50/70">
                 <td className="px-4 py-3">
-                  <div className="font-semibold text-slate-800 max-w-[260px] truncate">{p.title || "（未填項目）"}</div>
+                  <div className="font-semibold text-slate-800 max-w-[260px] truncate">{displayPaymentTitle(p) || "（未填項目）"}</div>
                   <div className="text-xs text-slate-400 mt-0.5">{p.invoiceNumber || p.docCategory}</div>
                   {p.remark && incomeCategory(p) !== "水電費" && <div className="text-xs text-slate-400 max-w-[260px] truncate mt-0.5">{p.remark}</div>}
                 </td>
@@ -1840,7 +1843,8 @@ function ReportsTab({ cur, units, payments, expenses }: {
     // 淨額用「已收」基礎，但押金為保證金不計入收入
     const paid = mp.filter((p) => incomeCategory(p) !== "押金").reduce((s, p) => s + p.paidAmount, 0);
     const expense = expenses.filter((e) => (e.date || "").startsWith(ym)).reduce((s, e) => s + e.amount, 0);
-    return { ym, month: `${parseInt(m)}月`, rent, deposit, mgmt, utility, repairFee, paid, expense, net: paid - expense };
+    const incomeDue = rent + mgmt + utility + repairFee;
+    return { ym, month: `${parseInt(m)}月`, rent, deposit, mgmt, utility, repairFee, incomeDue, paid, expense, net: paid - expense };
   });
 
   // annual summary (paid basis)
@@ -1864,7 +1868,7 @@ function ReportsTab({ cur, units, payments, expenses }: {
     { label: "水電費", value: utility, cls: "bg-sky-500", text: "text-sky-600" },
     { label: "維修費", value: repairFee, cls: "bg-orange-500", text: "text-orange-600" },
   ].filter((x) => x.value > 0);
-  const monthlyMax = Math.max(1, ...rows.map((r) => Math.max(r.paid, r.expense)));
+  const monthlyMax = Math.max(1, ...rows.map((r) => Math.max(r.incomeDue, r.expense)));
 
   // 支出按性質（分類）
   const expByCat = EXPENSE_CATEGORIES
@@ -1943,7 +1947,7 @@ function ReportsTab({ cur, units, payments, expenses }: {
             {rows.map((r) => (
               <div key={r.ym} className="flex-1 min-w-0 flex flex-col items-center gap-1">
                 <div className="w-full flex-1 flex items-end justify-center gap-0.5">
-                  <div className="w-1/2 rounded-t bg-emerald-400" style={{ height: `${Math.max((r.paid / monthlyMax) * 100, r.paid ? 4 : 0)}%` }} title={`${r.month} 收入 ${fmtMoney(r.paid, cur)}`} />
+                  <div className="w-1/2 rounded-t bg-emerald-400" style={{ height: `${Math.max((r.incomeDue / monthlyMax) * 100, r.incomeDue ? 4 : 0)}%` }} title={`${r.month} 應收收入 ${fmtMoney(r.incomeDue, cur)}`} />
                   <div className="w-1/2 rounded-t bg-red-300" style={{ height: `${Math.max((r.expense / monthlyMax) * 100, r.expense ? 4 : 0)}%` }} title={`${r.month} 支出 ${fmtMoney(r.expense, cur)}`} />
                 </div>
                 <span className="text-[10px] text-slate-400">{r.month}</span>
@@ -1951,7 +1955,7 @@ function ReportsTab({ cur, units, payments, expenses }: {
             ))}
           </div>
           <div className="flex justify-center gap-4 text-xs text-slate-500 mt-3">
-            <span className="inline-flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-emerald-400" />收入</span>
+            <span className="inline-flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-emerald-400" />應收收入</span>
             <span className="inline-flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-red-300" />支出</span>
           </div>
         </div>
