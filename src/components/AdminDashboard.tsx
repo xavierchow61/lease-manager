@@ -1028,7 +1028,7 @@ function PaymentGroup({
                 <td className="px-4 py-3">
                   <div className="font-semibold text-slate-800 max-w-[260px] truncate">{p.title || "（未填項目）"}</div>
                   <div className="text-xs text-slate-400 mt-0.5">{p.invoiceNumber || p.docCategory}</div>
-                  {p.remark && <div className="text-xs text-slate-400 max-w-[260px] truncate mt-0.5">{p.remark}</div>}
+                  {p.remark && incomeCategory(p) !== "水電費" && <div className="text-xs text-slate-400 max-w-[260px] truncate mt-0.5">{p.remark}</div>}
                 </td>
                 <td className="px-3 py-3 text-slate-700">{tenantName(p.tenantCode)}</td>
                 <td className="px-3 py-3 text-slate-600 tnum">{p.period || p.createdDate || "—"}</td>
@@ -1642,6 +1642,10 @@ function ExpensesTab({ cur, expenses, call }: {
   const thisMonthTotal = expenses.filter((e) => (e.date || "").startsWith(ym)).reduce((s, e) => s + e.amount, 0);
   const thisYearTotal = expenses.filter((e) => (e.date || "").startsWith(year)).reduce((s, e) => s + e.amount, 0);
   const allTotal = expenses.reduce((s, e) => s + e.amount, 0);
+  const topCategory = EXPENSE_CATEGORIES
+    .map((c) => ({ cat: c, amount: expenses.filter((e) => (e.date || "").startsWith(ym) && (e.category || "其他") === c).reduce((s, e) => s + e.amount, 0) }))
+    .sort((a, b) => b.amount - a.amount)[0];
+  const latestExpense = [...expenses].sort((a, b) => (b.date || "").localeCompare(a.date || ""))[0];
 
   // distinct months present (desc)
   const months = Array.from(new Set(expenses.map((e) => (e.date || "").slice(0, 7)).filter(Boolean))).sort().reverse();
@@ -1677,30 +1681,42 @@ function ExpensesTab({ cur, expenses, call }: {
         <button className="btn-primary gap-1.5" onClick={openAdd}><Plus size={16} /> 新增支出</button>
       </div>
 
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <Stat label="本月支出" value={fmtMoney(thisMonthTotal, cur)} valueClass="text-red-600" />
         <Stat label={`${year} 年支出`} value={fmtMoney(thisYearTotal, cur)} valueClass="text-orange-600" />
-        <Stat label="全部合計" value={fmtMoney(allTotal, cur)} valueClass="text-slate-700" />
+        <Stat label="本月最大分類" value={topCategory?.amount ? topCategory.cat : "—"} sub={topCategory?.amount ? fmtMoney(topCategory.amount, cur) : "暫無支出"} valueClass="text-slate-700" />
+        <Stat label="最近支出" value={latestExpense ? fmtMoney(latestExpense.amount, cur) : "—"} sub={latestExpense ? latestExpense.item : "尚無記錄"} valueClass="text-slate-700" />
       </div>
 
       {breakdown.length > 0 && (
-        <div className="card">
-          <div className="text-sm font-semibold text-slate-800 mb-3">分類佔比{monthFilter !== "全部" ? `（${monthFilter}）` : ""}</div>
-          <div className="space-y-2.5">
-            {breakdown.map((b) => {
-              const pct = scopeTotal > 0 ? Math.round((b.amount / scopeTotal) * 100) : 0;
-              return (
-                <div key={b.cat}>
-                  <div className="flex justify-between text-xs mb-1">
-                    <span className="text-slate-600">{b.cat}</span>
-                    <span className="text-slate-500 tnum">{fmtMoney(b.amount, cur)} · {pct}%</span>
+        <div className="grid lg:grid-cols-3 gap-4">
+          <div className="card lg:col-span-2">
+            <div className="text-sm font-semibold text-slate-800 mb-3">分類佔比{monthFilter !== "全部" ? `（${monthFilter}）` : ""}</div>
+            <div className="space-y-2.5">
+              {breakdown.map((b) => {
+                const pct = scopeTotal > 0 ? Math.round((b.amount / scopeTotal) * 100) : 0;
+                return (
+                  <div key={b.cat}>
+                    <div className="flex justify-between text-xs mb-1">
+                      <span className="text-slate-600">{b.cat}</span>
+                      <span className="text-slate-500 tnum">{fmtMoney(b.amount, cur)} · {pct}%</span>
+                    </div>
+                    <div className="h-2.5 rounded-full bg-slate-100 overflow-hidden">
+                      <div className={`h-full rounded-full ${CAT_BAR[b.cat] || "bg-slate-300"}`} style={{ width: `${pct}%` }} />
+                    </div>
                   </div>
-                  <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
-                    <div className={`h-full rounded-full ${CAT_BAR[b.cat] || "bg-slate-300"}`} style={{ width: `${pct}%` }} />
-                  </div>
-                </div>
-              );
-            })}
+                );
+              })}
+            </div>
+          </div>
+          <div className="card">
+            <div className="text-sm font-semibold text-slate-800 mb-3">支出摘要</div>
+            <div className="space-y-3">
+              <div className="flex justify-between text-sm"><span className="text-slate-500">篩選小計</span><span className="font-bold text-red-600 tnum">{fmtMoney(filteredTotal, cur)}</span></div>
+              <div className="flex justify-between text-sm"><span className="text-slate-500">支出筆數</span><span className="font-semibold tnum">{filtered.length}</span></div>
+              <div className="flex justify-between text-sm"><span className="text-slate-500">平均每筆</span><span className="font-semibold tnum">{fmtMoney(filtered.length ? filteredTotal / filtered.length : 0, cur)}</span></div>
+              <div className="pt-2 border-t border-slate-100 text-xs text-slate-400">用月份和分類篩選，可以快速檢查某段時間的成本結構。</div>
+            </div>
           </div>
         </div>
       )}
@@ -1718,35 +1734,51 @@ function ExpensesTab({ cur, expenses, call }: {
         </div>
       </div>
 
-      <div className="space-y-2">
-        {filtered.length > 0 && (
-          <div className="flex justify-between text-xs text-slate-500 px-1">
-            <span>{filtered.length} 筆</span>
-            <span className="tnum">小計 {fmtMoney(filteredTotal, cur)}</span>
-          </div>
-        )}
-        {filtered.map((e) => (
-          <div key={e.id} className="card !p-4 flex justify-between items-center gap-3">
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <span className={`badge ${CAT_BADGE[e.category] || "badge-slate"}`}>{e.category || "其他"}</span>
-                <span className="font-semibold text-slate-800 truncate">{e.item}</span>
-              </div>
-              <div className="text-xs text-slate-500 mt-1">{e.date}{e.relatedUnit ? ` · ${e.relatedUnit}` : ""}{e.remark ? ` · ${e.remark}` : ""}</div>
-            </div>
-            <div className="flex items-center gap-2 shrink-0">
-              <span className="font-bold text-red-600 tnum">-{fmtMoney(e.amount, cur)}</span>
-              <button className="pill bg-slate-100 text-slate-600 hover:bg-slate-200" aria-label="編輯" onClick={() => openEdit(e)}><Pencil size={13} /></button>
-              <button className="pill bg-red-50 text-red-600 hover:bg-red-100" aria-label="刪除" onClick={() => { if (confirm("刪除此支出？")) call(`expenses/${e.id}`, "DELETE", undefined, "已刪除"); }}><Trash2 size={13} /></button>
-            </div>
-          </div>
-        ))}
-        {filtered.length === 0 && (
-          <div className="text-center py-12">
-            <div className="inline-flex w-14 h-14 rounded-2xl bg-slate-100 text-slate-400 items-center justify-center mb-3"><TrendingDown size={24} /></div>
-            <p className="text-sm text-slate-500">{expenses.length === 0 ? "尚無支出記錄，點「新增支出」開始記帳。" : "沒有符合篩選條件的支出。"}</p>
-          </div>
-        )}
+      <div className="card !p-0 overflow-x-auto">
+        <table className="w-full text-sm whitespace-nowrap">
+          <thead>
+            <tr className="text-slate-400 text-xs border-b border-slate-100">
+              <th className="text-left px-4 py-2.5 font-medium">日期</th>
+              <th className="text-left px-3 py-2.5 font-medium">分類</th>
+              <th className="text-left px-3 py-2.5 font-medium">項目</th>
+              <th className="text-left px-3 py-2.5 font-medium">關聯單位</th>
+              <th className="text-right px-3 py-2.5 font-medium">金額</th>
+              <th className="text-right px-4 py-2.5 font-medium">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map((e) => (
+              <tr key={e.id} className="border-b border-slate-50 hover:bg-slate-50/70">
+                <td className="px-4 py-3 text-slate-600 tnum">{e.date || "—"}</td>
+                <td className="px-3 py-3"><span className={`badge ${CAT_BADGE[e.category] || "badge-slate"}`}>{e.category || "其他"}</span></td>
+                <td className="px-3 py-3">
+                  <div className="font-semibold text-slate-800 max-w-[240px] truncate">{e.item}</div>
+                  {e.remark && <div className="text-xs text-slate-400 max-w-[240px] truncate mt-0.5">{e.remark}</div>}
+                </td>
+                <td className="px-3 py-3 text-slate-500">{e.relatedUnit || "—"}</td>
+                <td className="px-3 py-3 text-right font-bold text-red-600 tnum">-{fmtMoney(e.amount, cur)}</td>
+                <td className="px-4 py-3">
+                  <div className="flex justify-end gap-1.5">
+                    <button className="pill bg-slate-100 text-slate-600 hover:bg-slate-200" aria-label="編輯" onClick={() => openEdit(e)}><Pencil size={13} /> 編輯</button>
+                    <button className="pill bg-red-50 text-red-600 hover:bg-red-100" aria-label="刪除" onClick={() => { if (confirm("刪除此支出？")) call(`expenses/${e.id}`, "DELETE", undefined, "已刪除"); }}><Trash2 size={13} /></button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+            {filtered.length === 0 && (
+              <tr><td colSpan={6} className="text-center py-12 text-slate-400">{expenses.length === 0 ? "尚無支出記錄，點「新增支出」開始記帳。" : "沒有符合篩選條件的支出。"}</td></tr>
+            )}
+          </tbody>
+          {filtered.length > 0 && (
+            <tfoot>
+              <tr className="border-t border-slate-200 font-bold">
+                <td className="px-4 py-2.5 text-slate-700" colSpan={4}>小計（{filtered.length} 筆）</td>
+                <td className="px-3 py-2.5 text-right text-red-600 tnum">-{fmtMoney(filteredTotal, cur)}</td>
+                <td />
+              </tr>
+            </tfoot>
+          )}
+        </table>
       </div>
 
       <Modal open={modal} onClose={() => setModal(false)} title={form.id ? "編輯支出" : "新增支出"} footer={
@@ -1826,21 +1858,19 @@ function ReportsTab({ cur, units, payments, expenses }: {
   const yearExpenses = expenses.filter((e) => (e.date || "").startsWith(String(year)));
   const totalExpense = yearExpenses.reduce((s, e) => s + e.amount, 0);
   const net = totalIncome - totalExpense;
+  const composition = [
+    { label: "租金", value: rent, cls: "bg-indigo-500", text: "text-indigo-600" },
+    { label: "管理費", value: mgmt, cls: "bg-amber-500", text: "text-amber-600" },
+    { label: "水電費", value: utility, cls: "bg-sky-500", text: "text-sky-600" },
+    { label: "維修費", value: repairFee, cls: "bg-orange-500", text: "text-orange-600" },
+  ].filter((x) => x.value > 0);
+  const monthlyMax = Math.max(1, ...rows.map((r) => Math.max(r.paid, r.expense)));
 
   // 支出按性質（分類）
   const expByCat = EXPENSE_CATEGORIES
     .map((c) => ({ cat: c, amount: yearExpenses.filter((e) => (e.category || "其他") === c).reduce((s, e) => s + e.amount, 0) }))
     .filter((b) => b.amount > 0)
     .sort((a, b) => b.amount - a.amount);
-
-  const cards: { label: string; value: number; cls: string }[] = [
-    { label: "押金結餘(在持保證金)", value: depositHeld, cls: "text-teal-600" },
-    { label: "租金", value: rent, cls: "text-indigo-600" },
-    { label: "管理費", value: mgmt, cls: "text-amber-600" },
-    { label: "水電費", value: utility, cls: "text-sky-600" },
-    { label: "維修費", value: repairFee, cls: "text-orange-600" },
-    { label: "支出", value: -totalExpense, cls: "text-red-500" },
-  ];
 
   // 月度表：只顯示有數字的欄位（手機上更窄、少橫向捲動）
   const visRows = rows.filter((r) => r.rent || r.mgmt || r.deposit || r.utility || r.repairFee || r.expense);
@@ -1875,18 +1905,56 @@ function ReportsTab({ cur, units, payments, expenses }: {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-        {cards.map((c) => (
-          <div key={c.label} className="card !p-3 text-center">
-            <div className="text-[11px] text-slate-400">{c.label}</div>
-            <div className={`text-base font-bold mt-1 ${c.cls}`}>{cur} {fmtNum(c.value)}</div>
-          </div>
-        ))}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <Stat label={`${year} 年總收入`} value={fmtMoney(totalIncome, cur)} valueClass="text-emerald-600" />
+        <Stat label={`${year} 年總支出`} value={fmtMoney(totalExpense, cur)} valueClass="text-red-600" />
+        <Stat label={`${year} 年淨利`} value={fmtMoney(net, cur)} valueClass={net >= 0 ? "text-indigo-600" : "text-red-600"} />
+        <Stat label="押金結餘" value={fmtMoney(depositHeld, cur)} valueClass="text-teal-600" sub="在持保證金" />
       </div>
 
-      <div className="grid grid-cols-2 gap-3">
-        <Stat label={`${year} 年總收入`} value={fmtMoney(totalIncome, cur)} valueClass="text-emerald-600" />
-        <Stat label={`${year} 年淨利`} value={fmtMoney(net, cur)} valueClass={net >= 0 ? "text-indigo-600" : "text-red-600"} />
+      <div className="grid lg:grid-cols-3 gap-4">
+        <div className="card">
+          <div className="font-semibold text-slate-800 mb-3">年度收入組成</div>
+          {composition.length === 0 ? (
+            <div className="text-center text-slate-400 py-8 text-sm">暫無收入記錄</div>
+          ) : (
+            <div className="space-y-3">
+              <div className="flex h-3 rounded-full overflow-hidden bg-slate-100">
+                {composition.map((x) => (
+                  <div key={x.label} className={x.cls} style={{ width: `${Math.max((x.value / totalIncome) * 100, 3)}%` }} title={`${x.label} ${fmtMoney(x.value, cur)}`} />
+                ))}
+              </div>
+              {composition.map((x) => {
+                const pct = totalIncome > 0 ? Math.round((x.value / totalIncome) * 100) : 0;
+                return (
+                  <div key={x.label} className="flex justify-between text-sm">
+                    <span className="text-slate-600">{x.label}</span>
+                    <span className={`font-semibold tnum ${x.text}`}>{fmtMoney(x.value, cur)} · {pct}%</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="card lg:col-span-2">
+          <div className="font-semibold text-slate-800 mb-3">月度收支趨勢</div>
+          <div className="flex items-end gap-2 h-44">
+            {rows.map((r) => (
+              <div key={r.ym} className="flex-1 min-w-0 flex flex-col items-center gap-1">
+                <div className="w-full flex-1 flex items-end justify-center gap-0.5">
+                  <div className="w-1/2 rounded-t bg-emerald-400" style={{ height: `${Math.max((r.paid / monthlyMax) * 100, r.paid ? 4 : 0)}%` }} title={`${r.month} 收入 ${fmtMoney(r.paid, cur)}`} />
+                  <div className="w-1/2 rounded-t bg-red-300" style={{ height: `${Math.max((r.expense / monthlyMax) * 100, r.expense ? 4 : 0)}%` }} title={`${r.month} 支出 ${fmtMoney(r.expense, cur)}`} />
+                </div>
+                <span className="text-[10px] text-slate-400">{r.month}</span>
+              </div>
+            ))}
+          </div>
+          <div className="flex justify-center gap-4 text-xs text-slate-500 mt-3">
+            <span className="inline-flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-emerald-400" />收入</span>
+            <span className="inline-flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-red-300" />支出</span>
+          </div>
+        </div>
       </div>
 
       <div className="card !p-0 overflow-x-auto">
