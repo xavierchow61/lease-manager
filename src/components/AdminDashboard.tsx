@@ -75,6 +75,23 @@ export default function AdminDashboard({ user, data, refresh, onLogout, onTierCh
   const billed = monthBills.reduce((s, p) => s + p.totalAmount, 0);
   const collected = monthBills.reduce((s, p) => s + p.paidAmount, 0);
   const collectionRate = billed > 0 ? Math.round((collected / billed) * 100) : 0;
+  const outstandingMonthBills = monthBills
+    .filter((p) => p.status !== "已繳費")
+    .map((p) => ({
+      ...p,
+      tenantName: units.find((u) => u.tenantCode === p.tenantCode)?.tenantName || p.tenantCode || "未指定租客",
+      address: units.find((u) => u.tenantCode === p.tenantCode)?.address || "",
+      balance: Math.max((p.totalAmount || 0) - (p.paidAmount || 0), 0),
+    }))
+    .sort((a, b) => b.balance - a.balance);
+  const outstandingAmount = outstandingMonthBills.reduce((s, p) => s + p.balance, 0);
+  const overdueBills = outstandingMonthBills.filter((p) => (p.createdDate || p.period) < todayISO());
+  const todoItems = [
+    ...(overdueBills.length > 0 ? [{ key: "overdue", icon: AlertTriangle, title: "處理逾期租金", sub: `${overdueBills.length} 張單據仍未繳清`, tone: "text-red-600 bg-red-50" }] : []),
+    ...(outstandingMonthBills.length > 0 ? [{ key: "collect", icon: Receipt, title: "跟進本月待收", sub: `尚欠 ${fmtMoney(outstandingAmount, cur)}`, tone: "text-amber-600 bg-amber-50" }] : []),
+    ...(expiring.length > 0 ? [{ key: "expiry", icon: Clock, title: "檢查即將到期租約", sub: `${expiring.length} 份合約 60 天內到期`, tone: "text-indigo-600 bg-indigo-50" }] : []),
+    ...(pendingRep > 0 ? [{ key: "repairs", icon: Wrench, title: "回覆維修個案", sub: `${pendingRep} 宗仍在處理`, tone: "text-sky-600 bg-sky-50" }] : []),
+  ].slice(0, 5);
   const tenantScores = units
     .filter((u) => u.tenantCode)
     .map((u) => {
@@ -104,52 +121,169 @@ export default function AdminDashboard({ user, data, refresh, onLogout, onTierCh
     <Shell user={user} tabs={tabs} active={tab} setActive={setTab} onLogout={onLogout}>
       {tab === "home" && (
         <div className="p-4 md:p-8 space-y-6">
-          <div>
-            <h1 className="text-2xl md:text-3xl font-bold text-slate-900 tracking-tight">
-              你好，{user.name || "業主"}
-            </h1>
-            <p className="text-sm text-slate-500 mt-1">這是你的物業總覽</p>
-          </div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <Stat label="出租中單位" value={occupied.length} sub={`共 ${units.length} 個單位`} />
-            <Stat label="預計月收租金" value={fmtMoney(totalRent, cur)} valueClass="text-emerald-600" />
-            <Stat label="待收款項" value={pendingPay} valueClass="text-red-600" sub="未繳 / 部分繳費" />
-            <Stat label="待處理維修" value={pendingRep} valueClass="text-amber-600" />
+          <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-3">
+            <div>
+              <h1 className="text-2xl md:text-3xl font-bold text-slate-900 tracking-tight">
+                今日待辦
+              </h1>
+              <p className="text-sm text-slate-500 mt-1">你好，{user.name || "業主"}，先處理收租和到期事項。</p>
+            </div>
+            <button
+              className="btn-primary gap-1.5 self-start md:self-auto"
+              onClick={() => call("payments/generate-rent", "POST", undefined, "已生成本月租金帳單")}
+            >
+              <RotateCw size={16} /> 生成本月租金
+            </button>
           </div>
 
-          {expiring.length > 0 && (
-            <div className="card border border-amber-200 bg-amber-50">
-              <div className="font-semibold text-amber-800 mb-2 flex items-center gap-1.5"><Clock size={16} /> 即將到期的合約（60 天內）</div>
-              <div className="space-y-1.5">
-                {expiring.map((u) => (
-                  <div key={u.id} className="flex justify-between text-sm">
-                    <span className="text-slate-700">{u.tenantName} · {u.address}</span>
-                    <span className="text-amber-700 font-medium">{u.leaseEndDate}</span>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <Stat label="本月應收" value={fmtMoney(billed, cur)} sub={`${monthBills.length} 張單據`} />
+            <Stat label="本月已收" value={fmtMoney(collected, cur)} valueClass="text-emerald-600" sub={`${collectionRate}% 收款率`} />
+            <Stat label="本月待收" value={fmtMoney(outstandingAmount, cur)} valueClass={outstandingAmount > 0 ? "text-red-600" : "text-emerald-600"} sub={`${outstandingMonthBills.length} 張未清`} />
+            <Stat label="出租中單位" value={occupied.length} sub={`共 ${units.length} 個單位`} />
+          </div>
+
+          <div className="grid lg:grid-cols-3 gap-4">
+            <div className="card lg:col-span-2">
+              <div className="flex items-center justify-between gap-2 mb-3">
+                <div className="font-semibold text-slate-800 flex items-center gap-1.5"><Wallet size={16} /> 本月收租</div>
+                <button className="btn-ghost btn-sm" onClick={() => setTab("payments")}>查看收款</button>
+              </div>
+              <div className="grid md:grid-cols-[140px_1fr] gap-4 items-center">
+                <div className="flex flex-col items-center justify-center">
+                  <div className="relative w-28 h-28">
+                    <svg viewBox="0 0 36 36" className="w-full h-full -rotate-90">
+                      <circle cx="18" cy="18" r="15.9" fill="none" stroke="#e2e8f0" strokeWidth="3.5" />
+                      <circle cx="18" cy="18" r="15.9" fill="none" stroke="#10b981" strokeWidth="3.5" strokeLinecap="round"
+                        strokeDasharray={`${collectionRate}, 100`} />
+                    </svg>
+                    <div className="absolute inset-0 flex items-center justify-center text-2xl font-bold text-emerald-600 tnum">{collectionRate}%</div>
+                  </div>
+                  <div className="text-xs text-slate-400 mt-2">收款進度</div>
+                </div>
+                <div className="space-y-3">
+                  <div>
+                    <div className="flex justify-between text-xs text-slate-500 mb-1">
+                      <span>已收 {fmtMoney(collected, cur)}</span>
+                      <span>待收 {fmtMoney(outstandingAmount, cur)}</span>
+                    </div>
+                    <div className="h-3 rounded-full bg-slate-100 overflow-hidden">
+                      <div className="h-full rounded-full bg-emerald-500" style={{ width: `${collectionRate}%` }} />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 text-center">
+                    <div className="bg-slate-50 rounded-lg py-2">
+                      <div className="text-[11px] text-slate-400">應收</div>
+                      <div className="text-sm font-semibold tnum">{fmtMoney(billed, cur)}</div>
+                    </div>
+                    <div className="bg-emerald-50 rounded-lg py-2">
+                      <div className="text-[11px] text-emerald-600">已收</div>
+                      <div className="text-sm font-semibold text-emerald-700 tnum">{fmtMoney(collected, cur)}</div>
+                    </div>
+                    <div className="bg-red-50 rounded-lg py-2">
+                      <div className="text-[11px] text-red-600">待收</div>
+                      <div className="text-sm font-semibold text-red-700 tnum">{fmtMoney(outstandingAmount, cur)}</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="card">
+              <div className="font-semibold text-slate-800 mb-3 flex items-center gap-1.5"><Bell size={16} /> 待辦清單</div>
+              <div className="space-y-2">
+                {todoItems.map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <button key={item.key} className="w-full flex items-center gap-3 text-left rounded-lg p-2.5 hover:bg-slate-50" onClick={() => setTab(item.key === "repairs" ? "repairs" : item.key === "expiry" ? "units" : "payments")}>
+                      <span className={`w-9 h-9 rounded-lg flex items-center justify-center ${item.tone}`}><Icon size={17} /></span>
+                      <span className="min-w-0">
+                        <span className="block text-sm font-semibold text-slate-800">{item.title}</span>
+                        <span className="block text-xs text-slate-500 truncate">{item.sub}</span>
+                      </span>
+                    </button>
+                  );
+                })}
+                {todoItems.length === 0 && (
+                  <div className="text-center py-8">
+                    <div className="inline-flex w-12 h-12 rounded-2xl bg-emerald-50 text-emerald-600 items-center justify-center mb-2"><ShieldCheck size={22} /></div>
+                    <p className="text-sm font-medium text-slate-700">今日沒有急件</p>
+                    <p className="text-xs text-slate-400 mt-1">本月收租和提醒事項都已整理好。</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="grid lg:grid-cols-3 gap-4">
+            <div className="card lg:col-span-2">
+              <div className="flex items-center justify-between gap-2 mb-3">
+                <div className="font-semibold text-slate-800 flex items-center gap-1.5"><AlertTriangle size={16} /> 本月待收清單</div>
+                <button className="btn-ghost btn-sm" onClick={() => setTab("payments")}>開立/處理帳單</button>
+              </div>
+              <div className="space-y-2">
+                {outstandingMonthBills.slice(0, 5).map((p) => (
+                  <div key={p.id} className="flex items-center justify-between gap-3 rounded-lg bg-slate-50 px-3 py-2.5">
+                    <div className="min-w-0">
+                      <div className="text-sm font-semibold text-slate-800 truncate">{p.tenantName}</div>
+                      <div className="text-xs text-slate-500 truncate">{p.title || p.period}{p.address ? ` · ${p.address}` : ""}</div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <div className="text-sm font-bold text-red-600 tnum">{fmtMoney(p.balance, cur)}</div>
+                      <span className={`badge ${payBadge(p.status)}`}>{p.status}</span>
+                    </div>
                   </div>
                 ))}
+                {outstandingMonthBills.length === 0 && (
+                  <div className="text-center text-slate-400 py-8 text-sm">本月暫無待收租金。</div>
+                )}
               </div>
+            </div>
+
+            <div className="card">
+              <div className="font-semibold text-slate-800 mb-3">快速操作</div>
+              <div className="grid grid-cols-2 lg:grid-cols-1 gap-2">
+                <button className="btn-ghost gap-1.5" onClick={() => setTab("units")}><Plus size={16} /> 新增單位</button>
+                <button className="btn-ghost gap-1.5" onClick={() => setTab("payments")}><Receipt size={16} /> 開立帳單</button>
+                <button className="btn-ghost gap-1.5" onClick={() => setTab("reports")}><BarChart3 size={16} /> 查看報表</button>
+                <button className="btn-ghost gap-1.5" onClick={() => setTab("plan")}><Crown size={16} /> 通知工具</button>
+              </div>
+            </div>
+          </div>
+
+          {(expiring.length > 0 || pendingRep > 0) && (
+            <div className="grid md:grid-cols-2 gap-4">
+              {expiring.length > 0 && (
+                <div className="card border border-amber-200 bg-amber-50">
+                  <div className="font-semibold text-amber-800 mb-2 flex items-center gap-1.5"><Clock size={16} /> 即將到期的合約（60 天內）</div>
+                  <div className="space-y-1.5">
+                    {expiring.slice(0, 4).map((u) => (
+                      <div key={u.id} className="flex justify-between gap-3 text-sm">
+                        <span className="text-slate-700 truncate">{u.tenantName} · {u.address}</span>
+                        <span className="text-amber-700 font-medium shrink-0">{u.leaseEndDate}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {pendingRep > 0 && (
+                <div className="card border border-sky-200 bg-sky-50">
+                  <div className="font-semibold text-sky-800 mb-2 flex items-center gap-1.5"><Wrench size={16} /> 待處理維修</div>
+                  <div className="space-y-1.5">
+                    {repairs.filter((r) => r.status !== "完成").slice(0, 4).map((r) => (
+                      <div key={r.id} className="flex justify-between gap-3 text-sm">
+                        <span className="text-slate-700 truncate">{r.description || "未填描述"}</span>
+                        <span className={`badge ${repBadge(r.status)} shrink-0`}>{r.status}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
           <div className="card">
-            <div className="font-semibold text-slate-800 mb-3">快速操作</div>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-              <button className="btn-ghost gap-1.5" onClick={() => setTab("units")}><Plus size={16} /> 新增單位</button>
-              <button className="btn-ghost gap-1.5" onClick={() => setTab("payments")}><Receipt size={16} /> 開立帳單</button>
-              <button
-                className="btn-ghost gap-1.5"
-                onClick={() => call("payments/generate-rent", "POST", undefined, "已生成本月租金帳單")}
-              >
-                <RotateCw size={16} /> 一鍵生成租金
-              </button>
-              <button className="btn-ghost gap-1.5" onClick={() => setTab("plan")}><Crown size={16} /> 升級方案</button>
-            </div>
-          </div>
-
-          {/* 收入趨勢 + 本月收款率 */}
-          <div className="grid md:grid-cols-3 gap-4">
-            <div className="card md:col-span-2">
-              <div className="flex items-center gap-1.5 font-semibold text-slate-800 mb-3"><TrendingUp size={16} /> 近 12 個月收入趨勢</div>
+            <div className="flex items-center gap-1.5 font-semibold text-slate-800 mb-3"><TrendingUp size={16} /> 近 12 個月收入趨勢</div>
               <div className="flex items-end gap-1.5 h-36">
                 {trend.map((t) => (
                   <div key={t.ym} className="flex-1 flex flex-col items-center gap-1 group">
@@ -164,19 +298,6 @@ export default function AdminDashboard({ user, data, refresh, onLogout, onTierCh
                   </div>
                 ))}
               </div>
-            </div>
-            <div className="card flex flex-col justify-center items-center text-center">
-              <div className="text-xs text-slate-500 mb-1">本月收款率</div>
-              <div className="relative w-28 h-28">
-                <svg viewBox="0 0 36 36" className="w-full h-full -rotate-90">
-                  <circle cx="18" cy="18" r="15.9" fill="none" stroke="#e2e8f0" strokeWidth="3.5" />
-                  <circle cx="18" cy="18" r="15.9" fill="none" stroke="#4f46e5" strokeWidth="3.5" strokeLinecap="round"
-                    strokeDasharray={`${collectionRate}, 100`} />
-                </svg>
-                <div className="absolute inset-0 flex items-center justify-center text-2xl font-bold text-indigo-600 tnum">{collectionRate}%</div>
-              </div>
-              <div className="text-xs text-slate-400 mt-2 tnum">已收 {fmtMoney(collected, cur)} / {fmtMoney(billed, cur)}</div>
-            </div>
           </div>
 
           {/* 租客繳費評分 */}
@@ -417,49 +538,59 @@ function UnitsTab({
         </div>
       </div>
 
-      <div className="grid md:grid-cols-2 gap-3">
-        {filtered.map((u) => (
-          <div key={u.id} className="card">
-            <div className="flex justify-between items-start">
-              <div className="min-w-0">
-                <div className="font-semibold text-slate-800">{u.address || "（未填地址）"}</div>
-                <div className="text-sm text-slate-500 mt-0.5">
-                  {u.tenantName ? `${u.tenantName} · ${u.tenantCode}` : "（無租客）"}
-                </div>
-              </div>
-              <span className={`badge ${unitStatusBadge(u.status)}`}>{u.status || "空置中"}</span>
-            </div>
-            <div className="grid grid-cols-3 gap-2 mt-3 text-center">
-              <div className="bg-slate-50 rounded-lg py-2">
-                <div className="text-[11px] text-slate-400">月租</div>
-                <div className="text-sm font-semibold">{fmtMoney(u.monthlyRent, user.currency)}</div>
-              </div>
-              <div className="bg-slate-50 rounded-lg py-2">
-                <div className="text-[11px] text-slate-400">押金</div>
-                <div className="text-sm font-semibold">{fmtNum(u.deposit)}</div>
-              </div>
-              <div className="bg-slate-50 rounded-lg py-2">
-                <div className="text-[11px] text-slate-400">到期</div>
-                <div className={`text-sm font-semibold ${isExpiringSoon(u.leaseEndDate) ? "text-amber-600" : ""}`}>
-                  {u.leaseEndDate || "—"}
-                </div>
-              </div>
-            </div>
-            <div className={`grid ${u.tenantName ? "grid-cols-2" : "grid-cols-1"} gap-2 mt-3`}>
-              <button className="btn-ghost !py-2 text-sm" onClick={() => openEdit(u)}>編輯</button>
-              {u.tenantName && (
-                <>
-                  <button className="btn-ghost !py-2 text-sm" onClick={() => setTransferTarget(u)}>轉租</button>
-                  <button className="btn-ghost !py-2 text-sm" onClick={() => setChecklistTarget(u)}>入退住清單</button>
-                  <button className="btn-ghost !py-2 text-sm" onClick={() => setArchiveTarget(u)}>退租封存</button>
-                </>
-              )}
-            </div>
-          </div>
-        ))}
-        {filtered.length === 0 && (
-          <div className="col-span-full text-center text-slate-400 py-12">尚無單位資料，點「新增單位」開始。</div>
-        )}
+      <div className="card !p-0 overflow-x-auto">
+        <table className="w-full text-sm whitespace-nowrap">
+          <thead>
+            <tr className="text-slate-400 text-xs border-b border-slate-100">
+              <th className="text-left px-4 py-2.5 font-medium">單位 / 地址</th>
+              <th className="text-left px-3 py-2.5 font-medium">租客</th>
+              <th className="text-left px-3 py-2.5 font-medium">狀態</th>
+              <th className="text-right px-3 py-2.5 font-medium">月租</th>
+              <th className="text-right px-3 py-2.5 font-medium">押金</th>
+              <th className="text-left px-3 py-2.5 font-medium">合約到期</th>
+              <th className="text-right px-4 py-2.5 font-medium">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map((u) => (
+              <tr key={u.id} className="border-b border-slate-50 hover:bg-slate-50/70">
+                <td className="px-4 py-3">
+                  <div className="font-semibold text-slate-800 max-w-[260px] truncate">{u.address || "（未填地址）"}</div>
+                  {u.memo && <div className="text-xs text-slate-400 max-w-[260px] truncate mt-0.5">{u.memo}</div>}
+                </td>
+                <td className="px-3 py-3">
+                  {u.tenantName ? (
+                    <div>
+                      <div className="font-medium text-slate-700">{u.tenantName}</div>
+                      <div className="text-xs text-slate-400 tnum">{u.tenantCode || "—"}</div>
+                    </div>
+                  ) : (
+                    <span className="text-slate-400">（無租客）</span>
+                  )}
+                </td>
+                <td className="px-3 py-3"><span className={`badge ${unitStatusBadge(u.status)}`}>{u.status || "空置中"}</span></td>
+                <td className="px-3 py-3 text-right font-semibold text-slate-800 tnum">{fmtMoney(u.monthlyRent, user.currency)}</td>
+                <td className="px-3 py-3 text-right text-slate-600 tnum">{fmtNum(u.deposit)}</td>
+                <td className={`px-3 py-3 tnum ${isExpiringSoon(u.leaseEndDate) ? "text-amber-600 font-semibold" : "text-slate-600"}`}>{u.leaseEndDate || "—"}</td>
+                <td className="px-4 py-3">
+                  <div className="flex justify-end gap-1.5">
+                    <button className="pill bg-slate-100 text-slate-600 hover:bg-slate-200" onClick={() => openEdit(u)}><Pencil size={13} /> 編輯</button>
+                    {u.tenantName && (
+                      <>
+                        <button className="pill bg-indigo-50 text-indigo-700 hover:bg-indigo-100" onClick={() => setTransferTarget(u)}>轉租</button>
+                        <button className="pill bg-emerald-50 text-emerald-700 hover:bg-emerald-100" onClick={() => setChecklistTarget(u)}>清單</button>
+                        <button className="pill bg-amber-50 text-amber-700 hover:bg-amber-100" onClick={() => setArchiveTarget(u)}>退租</button>
+                      </>
+                    )}
+                  </div>
+                </td>
+              </tr>
+            ))}
+            {filtered.length === 0 && (
+              <tr><td colSpan={7} className="text-center text-slate-400 py-12">尚無單位資料，點「新增單位」開始。</td></tr>
+            )}
+          </tbody>
+        </table>
       </div>
 
       <Modal
@@ -843,44 +974,60 @@ function PaymentsTab({
         </div>
       )}
 
-      <div className="space-y-2">
-        {filtered.map((p) => (
-          <div key={p.id} className="card !p-4">
-            <div className="flex justify-between items-start gap-2">
-              <div className="min-w-0">
-                <div className="font-semibold text-slate-800 truncate">{p.title}</div>
-                <div className="text-xs text-slate-500 mt-0.5">
-                  {tenantName(p.tenantCode)} · {p.invoiceNumber || p.docCategory} · {p.period || p.createdDate}
-                </div>
-                {p.remark && <div className="text-xs text-slate-400 mt-0.5 whitespace-pre-line">{p.remark}</div>}
-              </div>
-              <span className={`badge ${payBadge(p.status)} shrink-0`}>{p.status}</span>
-            </div>
-            <div className="flex items-end justify-between mt-2">
-              <div className="text-sm">
-                <span className="font-bold text-slate-800">{fmtMoney(p.totalAmount, p.currency)}</span>
-                {p.paidAmount > 0 && p.status !== "已繳費" && (
-                  <span className="text-xs text-slate-400 ml-2">已付 {fmtNum(p.paidAmount)}</span>
-                )}
-              </div>
-              <div className="flex gap-1.5 flex-wrap justify-end">
-                <button className="pill bg-indigo-50 text-indigo-700 hover:bg-indigo-100" onClick={() => window.open(`/doc/${p.id}`, "_blank")}><FileText size={13} /> 單據</button>
-                {p.status !== "已繳費" && (
-                  <>
-                    <button className="pill bg-emerald-50 text-emerald-700 hover:bg-emerald-100" onClick={() => call(`payments/${p.id}`, "PUT", { action: "status", status: "已繳費" }, "已標記繳清")}>標記繳清</button>
-                    <button className="pill bg-amber-50 text-amber-700 hover:bg-amber-100" onClick={() => setPartial(p)}>部分收款</button>
-                    {prepayBalance(p.tenantCode) > 0 && !["預付款", "預付款抵扣"].includes(p.docCategory) && (
-                      <button className="pill bg-violet-50 text-violet-700 hover:bg-violet-100" title={`可用餘額 ${fmtMoney(prepayBalance(p.tenantCode), p.currency)}`} onClick={() => call(`payments/${p.id}/offset`, "POST", {}, "已用預付款抵扣")}><Banknote size={13} /> 預付款抵扣</button>
-                    )}
-                  </>
-                )}
-                <button className="pill bg-slate-100 text-slate-600 hover:bg-slate-200" aria-label="編輯單據" onClick={() => setEditing(p)}><Pencil size={13} /></button>
-                <button className="pill bg-red-50 text-red-600 hover:bg-red-100" aria-label="刪除單據" onClick={() => { if (confirm("確定刪除此單據？")) call(`payments/${p.id}`, "DELETE", undefined, "已刪除"); }}><Trash2 size={13} /></button>
-              </div>
-            </div>
-          </div>
-        ))}
-        {filtered.length === 0 && <div className="text-center text-slate-400 py-12">沒有符合的單據。</div>}
+      <div className="card !p-0 overflow-x-auto">
+        <table className="w-full text-sm whitespace-nowrap">
+          <thead>
+            <tr className="text-slate-400 text-xs border-b border-slate-100">
+              <th className="text-left px-4 py-2.5 font-medium">單據 / 項目</th>
+              <th className="text-left px-3 py-2.5 font-medium">租客</th>
+              <th className="text-left px-3 py-2.5 font-medium">期間</th>
+              <th className="text-right px-3 py-2.5 font-medium">應收</th>
+              <th className="text-right px-3 py-2.5 font-medium">已收</th>
+              <th className="text-right px-3 py-2.5 font-medium">尚欠</th>
+              <th className="text-left px-3 py-2.5 font-medium">狀態</th>
+              <th className="text-right px-4 py-2.5 font-medium">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map((p) => {
+              const owing = Math.max((p.totalAmount || 0) - (p.paidAmount || 0), 0);
+              return (
+                <tr key={p.id} className="border-b border-slate-50 hover:bg-slate-50/70">
+                  <td className="px-4 py-3">
+                    <div className="font-semibold text-slate-800 max-w-[260px] truncate">{p.title || "（未填項目）"}</div>
+                    <div className="text-xs text-slate-400 mt-0.5">{p.invoiceNumber || p.docCategory}</div>
+                    {p.remark && <div className="text-xs text-slate-400 max-w-[260px] truncate mt-0.5">{p.remark}</div>}
+                  </td>
+                  <td className="px-3 py-3 text-slate-700">{tenantName(p.tenantCode)}</td>
+                  <td className="px-3 py-3 text-slate-600 tnum">{p.period || p.createdDate || "—"}</td>
+                  <td className="px-3 py-3 text-right font-semibold text-slate-800 tnum">{fmtMoney(p.totalAmount, p.currency)}</td>
+                  <td className="px-3 py-3 text-right text-emerald-600 tnum">{p.paidAmount > 0 ? fmtMoney(p.paidAmount, p.currency) : "—"}</td>
+                  <td className={`px-3 py-3 text-right font-semibold tnum ${owing > 0 ? "text-red-600" : "text-slate-400"}`}>{owing > 0 ? fmtMoney(owing, p.currency) : "—"}</td>
+                  <td className="px-3 py-3"><span className={`badge ${payBadge(p.status)}`}>{p.status}</span></td>
+                  <td className="px-4 py-3">
+                    <div className="flex justify-end gap-1.5">
+                      <button className="pill bg-indigo-50 text-indigo-700 hover:bg-indigo-100" onClick={() => window.open(`/doc/${p.id}`, "_blank")}><FileText size={13} /> 單據</button>
+                      {p.status !== "已繳費" && (
+                        <>
+                          <button className="pill bg-emerald-50 text-emerald-700 hover:bg-emerald-100" onClick={() => call(`payments/${p.id}`, "PUT", { action: "status", status: "已繳費" }, "已標記繳清")}>繳清</button>
+                          <button className="pill bg-amber-50 text-amber-700 hover:bg-amber-100" onClick={() => setPartial(p)}>部分</button>
+                          {prepayBalance(p.tenantCode) > 0 && !["預付款", "預付款抵扣"].includes(p.docCategory) && (
+                            <button className="pill bg-violet-50 text-violet-700 hover:bg-violet-100" title={`可用餘額 ${fmtMoney(prepayBalance(p.tenantCode), p.currency)}`} onClick={() => call(`payments/${p.id}/offset`, "POST", {}, "已用預付款抵扣")}><Banknote size={13} /> 抵扣</button>
+                          )}
+                        </>
+                      )}
+                      <button className="pill bg-slate-100 text-slate-600 hover:bg-slate-200" aria-label="編輯單據" onClick={() => setEditing(p)}><Pencil size={13} /></button>
+                      <button className="pill bg-red-50 text-red-600 hover:bg-red-100" aria-label="刪除單據" onClick={() => { if (confirm("確定刪除此單據？")) call(`payments/${p.id}`, "DELETE", undefined, "已刪除"); }}><Trash2 size={13} /></button>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+            {filtered.length === 0 && (
+              <tr><td colSpan={8} className="text-center text-slate-400 py-12">沒有符合的單據。</td></tr>
+            )}
+          </tbody>
+        </table>
       </div>
       </>)}
 
