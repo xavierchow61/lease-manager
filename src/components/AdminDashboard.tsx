@@ -216,33 +216,9 @@ export default function AdminDashboard({ user, data, refresh, onLogout, onTierCh
           </div>
 
           <div className="grid lg:grid-cols-3 gap-4">
-            <div className="card lg:col-span-2">
-              <div className="flex items-center justify-between gap-2 mb-3">
-                <div className="font-semibold text-slate-800 flex items-center gap-1.5"><AlertTriangle size={16} /> 本月待收清單</div>
-                <button className="btn-ghost btn-sm" onClick={() => setTab("payments")}>開立/處理帳單</button>
-              </div>
-              <div className="space-y-2">
-                {outstandingMonthBills.slice(0, 5).map((p) => (
-                  <div key={p.id} className="flex items-center justify-between gap-3 rounded-lg bg-slate-50 px-3 py-2.5">
-                    <div className="min-w-0">
-                      <div className="text-sm font-semibold text-slate-800 truncate">{p.tenantName}</div>
-                      <div className="text-xs text-slate-500 truncate">{p.title || p.period}{p.address ? ` · ${p.address}` : ""}</div>
-                    </div>
-                    <div className="text-right shrink-0">
-                      <div className="text-sm font-bold text-red-600 tnum">{fmtMoney(p.balance, cur)}</div>
-                      <span className={`badge ${payBadge(p.status)}`}>{p.status}</span>
-                    </div>
-                  </div>
-                ))}
-                {outstandingMonthBills.length === 0 && (
-                  <div className="text-center text-slate-400 py-8 text-sm">本月暫無待收租金。</div>
-                )}
-              </div>
-            </div>
-
-            <div className="card">
+            <div className="card lg:col-span-3">
               <div className="font-semibold text-slate-800 mb-3">快速操作</div>
-              <div className="grid grid-cols-2 lg:grid-cols-1 gap-2">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
                 <button className="btn-ghost gap-1.5" onClick={() => setTab("units")}><Plus size={16} /> 新增單位</button>
                 <button className="btn-ghost gap-1.5" onClick={() => setTab("payments")}><Receipt size={16} /> 開立帳單</button>
                 <button className="btn-ghost gap-1.5" onClick={() => setTab("reports")}><BarChart3 size={16} /> 查看報表</button>
@@ -891,7 +867,7 @@ function PaymentsTab({
     .sort((a, b) => a.tenantCode.localeCompare(b.tenantCode, undefined, { numeric: true, sensitivity: "base" }));
   const [filter, setFilter] = useState("全部");
   const [tenantFilter, setTenantFilter] = useState("全部");
-  const [view, setView] = useState<"bills" | "ledger">("bills");
+  const [view, setView] = useState<"bills" | "utility" | "ledger">("bills");
   const [billModal, setBillModal] = useState(false);
   const [toolsModal, setToolsModal] = useState(false);
   const [partial, setPartial] = useState<Payment | null>(null);
@@ -908,6 +884,12 @@ function PaymentsTab({
   const filteredOwing = unpaidFiltered.reduce((s, p) => s + Math.max(p.totalAmount - p.paidAmount, 0), 0);
 
   const tenantName = (code: string) => units.find((u) => u.tenantCode === code)?.tenantName || code;
+  const groupedBills = {
+    rent: filtered.filter((p) => incomeCategory(p) === "租金"),
+    deposit: filtered.filter((p) => incomeCategory(p) === "押金"),
+    utility: filtered.filter((p) => incomeCategory(p) === "水電費"),
+  };
+  const otherBills = filtered.filter((p) => !["租金", "押金", "水電費"].includes(incomeCategory(p)));
 
   // Prepayment balance per tenant = Σ預付款 − Σ預付款抵扣.
   const prepayBalance = (code: string) => {
@@ -927,8 +909,8 @@ function PaymentsTab({
         </div>
       </div>
 
-      <div className="inline-flex p-1 bg-slate-100 rounded-xl text-sm">
-        {([["bills", "帳單清單"], ["ledger", "收款明細"]] as const).map(([k, label]) => (
+      <div className="inline-flex p-1 bg-slate-100 rounded-xl text-sm flex-wrap">
+        {([["bills", "帳單清單"], ["utility", "水電抄表"], ["ledger", "收款明細"]] as const).map(([k, label]) => (
           <button key={k} onClick={() => setView(k)} className={`px-4 py-1.5 rounded-lg font-medium transition ${view === k ? "bg-white shadow text-indigo-600" : "text-slate-500"}`}>
             {label}
           </button>
@@ -936,6 +918,7 @@ function PaymentsTab({
       </div>
 
       {view === "ledger" && <LedgerView payments={payments} tenants={tenants} cur={cur} />}
+      {view === "utility" && <UtilityBillingPanel tenants={tenants} cur={cur} call={call} toast={toast} />}
 
       {view === "bills" && (<>
       <div className="flex gap-2 flex-wrap items-center">
@@ -981,60 +964,13 @@ function PaymentsTab({
         </div>
       )}
 
-      <div className="card !p-0 overflow-x-auto">
-        <table className="w-full text-sm whitespace-nowrap">
-          <thead>
-            <tr className="text-slate-400 text-xs border-b border-slate-100">
-              <th className="text-left px-4 py-2.5 font-medium">單據 / 項目</th>
-              <th className="text-left px-3 py-2.5 font-medium">租客</th>
-              <th className="text-left px-3 py-2.5 font-medium">期間</th>
-              <th className="text-right px-3 py-2.5 font-medium">應收</th>
-              <th className="text-right px-3 py-2.5 font-medium">已收</th>
-              <th className="text-right px-3 py-2.5 font-medium">尚欠</th>
-              <th className="text-left px-3 py-2.5 font-medium">狀態</th>
-              <th className="text-right px-4 py-2.5 font-medium">操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.map((p) => {
-              const owing = Math.max((p.totalAmount || 0) - (p.paidAmount || 0), 0);
-              return (
-                <tr key={p.id} className="border-b border-slate-50 hover:bg-slate-50/70">
-                  <td className="px-4 py-3">
-                    <div className="font-semibold text-slate-800 max-w-[260px] truncate">{p.title || "（未填項目）"}</div>
-                    <div className="text-xs text-slate-400 mt-0.5">{p.invoiceNumber || p.docCategory}</div>
-                    {p.remark && <div className="text-xs text-slate-400 max-w-[260px] truncate mt-0.5">{p.remark}</div>}
-                  </td>
-                  <td className="px-3 py-3 text-slate-700">{tenantName(p.tenantCode)}</td>
-                  <td className="px-3 py-3 text-slate-600 tnum">{p.period || p.createdDate || "—"}</td>
-                  <td className="px-3 py-3 text-right font-semibold text-slate-800 tnum">{fmtMoney(p.totalAmount, p.currency)}</td>
-                  <td className="px-3 py-3 text-right text-emerald-600 tnum">{p.paidAmount > 0 ? fmtMoney(p.paidAmount, p.currency) : "—"}</td>
-                  <td className={`px-3 py-3 text-right font-semibold tnum ${owing > 0 ? "text-red-600" : "text-slate-400"}`}>{owing > 0 ? fmtMoney(owing, p.currency) : "—"}</td>
-                  <td className="px-3 py-3"><span className={`badge ${payBadge(p.status)}`}>{p.status}</span></td>
-                  <td className="px-4 py-3">
-                    <div className="flex justify-end gap-1.5">
-                      <button className="pill bg-indigo-50 text-indigo-700 hover:bg-indigo-100" onClick={() => window.open(`/doc/${p.id}`, "_blank")}><FileText size={13} /> 單據</button>
-                      {p.status !== "已繳費" && (
-                        <>
-                          <button className="pill bg-emerald-50 text-emerald-700 hover:bg-emerald-100" onClick={() => call(`payments/${p.id}`, "PUT", { action: "status", status: "已繳費" }, "已標記繳清")}>繳清</button>
-                          <button className="pill bg-amber-50 text-amber-700 hover:bg-amber-100" onClick={() => setPartial(p)}>部分</button>
-                          {prepayBalance(p.tenantCode) > 0 && !["預付款", "預付款抵扣"].includes(p.docCategory) && (
-                            <button className="pill bg-violet-50 text-violet-700 hover:bg-violet-100" title={`可用餘額 ${fmtMoney(prepayBalance(p.tenantCode), p.currency)}`} onClick={() => call(`payments/${p.id}/offset`, "POST", {}, "已用預付款抵扣")}><Banknote size={13} /> 抵扣</button>
-                          )}
-                        </>
-                      )}
-                      <button className="pill bg-slate-100 text-slate-600 hover:bg-slate-200" aria-label="編輯單據" onClick={() => setEditing(p)}><Pencil size={13} /></button>
-                      <button className="pill bg-red-50 text-red-600 hover:bg-red-100" aria-label="刪除單據" onClick={() => { if (confirm("確定刪除此單據？")) call(`payments/${p.id}`, "DELETE", undefined, "已刪除"); }}><Trash2 size={13} /></button>
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
-            {filtered.length === 0 && (
-              <tr><td colSpan={8} className="text-center text-slate-400 py-12">沒有符合的單據。</td></tr>
-            )}
-          </tbody>
-        </table>
+      <div className="space-y-4">
+        <PaymentGroup title="租金帳單" payments={groupedBills.rent} empty="沒有符合的租金帳單。" tenantName={tenantName} prepayBalance={prepayBalance} call={call} setPartial={setPartial} setEditing={setEditing} />
+        <PaymentGroup title="押金帳單" payments={groupedBills.deposit} empty="沒有符合的押金帳單。" tenantName={tenantName} prepayBalance={prepayBalance} call={call} setPartial={setPartial} setEditing={setEditing} />
+        <PaymentGroup title="水電費帳單" payments={groupedBills.utility} empty="沒有符合的水電費帳單。" tenantName={tenantName} prepayBalance={prepayBalance} call={call} setPartial={setPartial} setEditing={setEditing} />
+        {otherBills.length > 0 && (
+          <PaymentGroup title="其他帳單" payments={otherBills} empty="沒有符合的其他帳單。" tenantName={tenantName} prepayBalance={prepayBalance} call={call} setPartial={setPartial} setEditing={setEditing} />
+        )}
       </div>
       </>)}
 
@@ -1042,6 +978,167 @@ function PaymentsTab({
       <ToolsModal open={toolsModal} onClose={() => setToolsModal(false)} tenants={tenants} payments={payments} cur={cur} call={call} toast={toast} />
       <PartialModal target={partial} onClose={() => setPartial(null)} call={call} />
       <EditPaymentModal target={editing} onClose={() => setEditing(null)} tenants={tenants} call={call} />
+    </div>
+  );
+}
+
+function PaymentGroup({
+  title,
+  payments,
+  empty,
+  tenantName,
+  prepayBalance,
+  call,
+  setPartial,
+  setEditing,
+}: {
+  title: string;
+  payments: Payment[];
+  empty: string;
+  tenantName: (code: string) => string;
+  prepayBalance: (code: string) => number;
+  call: (p: string, m: "POST" | "PUT" | "DELETE", b?: unknown, ok?: string) => Promise<boolean>;
+  setPartial: (p: Payment) => void;
+  setEditing: (p: Payment) => void;
+}) {
+  return (
+    <div className="card !p-0 overflow-x-auto">
+      <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between gap-2">
+        <div className="font-semibold text-slate-800">{title}</div>
+        <div className="text-xs text-slate-400">{payments.length} 筆</div>
+      </div>
+      <table className="w-full text-sm whitespace-nowrap">
+        <thead>
+          <tr className="text-slate-400 text-xs border-b border-slate-100">
+            <th className="text-left px-4 py-2.5 font-medium">單據 / 項目</th>
+            <th className="text-left px-3 py-2.5 font-medium">租客</th>
+            <th className="text-left px-3 py-2.5 font-medium">期間</th>
+            <th className="text-right px-3 py-2.5 font-medium">應收</th>
+            <th className="text-right px-3 py-2.5 font-medium">已收</th>
+            <th className="text-right px-3 py-2.5 font-medium">尚欠</th>
+            <th className="text-left px-3 py-2.5 font-medium">狀態</th>
+            <th className="text-right px-4 py-2.5 font-medium">操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {payments.map((p) => {
+            const owing = Math.max((p.totalAmount || 0) - (p.paidAmount || 0), 0);
+            return (
+              <tr key={p.id} className="border-b border-slate-50 hover:bg-slate-50/70">
+                <td className="px-4 py-3">
+                  <div className="font-semibold text-slate-800 max-w-[260px] truncate">{p.title || "（未填項目）"}</div>
+                  <div className="text-xs text-slate-400 mt-0.5">{p.invoiceNumber || p.docCategory}</div>
+                  {p.remark && <div className="text-xs text-slate-400 max-w-[260px] truncate mt-0.5">{p.remark}</div>}
+                </td>
+                <td className="px-3 py-3 text-slate-700">{tenantName(p.tenantCode)}</td>
+                <td className="px-3 py-3 text-slate-600 tnum">{p.period || p.createdDate || "—"}</td>
+                <td className="px-3 py-3 text-right font-semibold text-slate-800 tnum">{fmtMoney(p.totalAmount, p.currency)}</td>
+                <td className="px-3 py-3 text-right text-emerald-600 tnum">{p.paidAmount > 0 ? fmtMoney(p.paidAmount, p.currency) : "—"}</td>
+                <td className={`px-3 py-3 text-right font-semibold tnum ${owing > 0 ? "text-red-600" : "text-slate-400"}`}>{owing > 0 ? fmtMoney(owing, p.currency) : "—"}</td>
+                <td className="px-3 py-3"><span className={`badge ${payBadge(p.status)}`}>{p.status}</span></td>
+                <td className="px-4 py-3">
+                  <div className="flex justify-end gap-1.5">
+                    <button className="pill bg-indigo-50 text-indigo-700 hover:bg-indigo-100" onClick={() => window.open(`/doc/${p.id}`, "_blank")}><FileText size={13} /> 單據</button>
+                    {p.status !== "已繳費" && (
+                      <>
+                        <button className="pill bg-emerald-50 text-emerald-700 hover:bg-emerald-100" onClick={() => call(`payments/${p.id}`, "PUT", { action: "status", status: "已繳費" }, "已標記繳清")}>繳清</button>
+                        <button className="pill bg-amber-50 text-amber-700 hover:bg-amber-100" onClick={() => setPartial(p)}>部分</button>
+                        {prepayBalance(p.tenantCode) > 0 && !["預付款", "預付款抵扣"].includes(p.docCategory) && (
+                          <button className="pill bg-violet-50 text-violet-700 hover:bg-violet-100" title={`可用餘額 ${fmtMoney(prepayBalance(p.tenantCode), p.currency)}`} onClick={() => call(`payments/${p.id}/offset`, "POST", {}, "已用預付款抵扣")}><Banknote size={13} /> 抵扣</button>
+                        )}
+                      </>
+                    )}
+                    <button className="pill bg-slate-100 text-slate-600 hover:bg-slate-200" aria-label="編輯單據" onClick={() => setEditing(p)}><Pencil size={13} /></button>
+                    <button className="pill bg-red-50 text-red-600 hover:bg-red-100" aria-label="刪除單據" onClick={() => { if (confirm("確定刪除此單據？")) call(`payments/${p.id}`, "DELETE", undefined, "已刪除"); }}><Trash2 size={13} /></button>
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+          {payments.length === 0 && (
+            <tr><td colSpan={8} className="text-center text-slate-400 py-8">{empty}</td></tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function UtilityBillingPanel({
+  tenants,
+  cur,
+  call,
+  toast,
+}: {
+  tenants: Unit[];
+  cur: string;
+  call: (p: string, m: "POST" | "PUT" | "DELETE", b?: unknown, ok?: string) => Promise<boolean>;
+  toast: (m: string, t?: "info" | "success" | "error") => void;
+}) {
+  const [util, setUtil] = useState<Record<string, { water: string; elec: string }>>({});
+  const setR = (tenantCode: string, k: "water" | "elec", v: string) =>
+    setUtil({ ...util, [tenantCode]: { water: util[tenantCode]?.water ?? "", elec: util[tenantCode]?.elec ?? "", [k]: v } });
+
+  return (
+    <div className="space-y-4">
+      <div className="card bg-sky-50 border border-sky-100">
+        <div className="font-semibold text-sky-900 flex items-center gap-1.5"><Droplets size={16} /> 每月水電抄表</div>
+        <p className="text-sm text-sky-800/80 mt-1">輸入本期水錶和電錶讀數，系統會按上期讀數計算用量及收費，生成帳單後自動更新下期起始讀數。</p>
+      </div>
+      <div className="card !p-0 overflow-x-auto">
+        <table className="w-full text-sm whitespace-nowrap">
+          <thead>
+            <tr className="text-slate-400 text-xs border-b border-slate-100">
+              <th className="text-left px-4 py-2.5 font-medium">租客 / 單位</th>
+              <th className="text-right px-3 py-2.5 font-medium">水錶上期</th>
+              <th className="text-right px-3 py-2.5 font-medium">水錶今期</th>
+              <th className="text-right px-3 py-2.5 font-medium">用水</th>
+              <th className="text-right px-3 py-2.5 font-medium">電錶上期</th>
+              <th className="text-right px-3 py-2.5 font-medium">電錶今期</th>
+              <th className="text-right px-3 py-2.5 font-medium">用電</th>
+              <th className="text-right px-4 py-2.5 font-medium">本期收費</th>
+            </tr>
+          </thead>
+          <tbody>
+            {tenants.map((t) => {
+              const cw = parseFloat(util[t.tenantCode]?.water ?? "");
+              const ce = parseFloat(util[t.tenantCode]?.elec ?? "");
+              const wu = isNaN(cw) ? 0 : Math.max(cw - t.waterReading, 0);
+              const eu = isNaN(ce) ? 0 : Math.max(ce - t.electricReading, 0);
+              const waterAmt = wu * t.waterRate;
+              const elecAmt = eu * t.electricRate;
+              const amt = Math.round(waterAmt + elecAmt);
+              return (
+                <tr key={t.id} className="border-b border-slate-50 hover:bg-slate-50/70">
+                  <td className="px-4 py-3">
+                    <div className="font-semibold text-slate-800">{t.tenantName || t.tenantCode}</div>
+                    <div className="text-xs text-slate-400 truncate max-w-[220px]">{t.address}</div>
+                    <div className="text-xs text-slate-400">單價 水 {fmtMoney(t.waterRate, cur)} / 電 {fmtMoney(t.electricRate, cur)}</div>
+                  </td>
+                  <td className="px-3 py-3 text-right text-slate-600 tnum">{fmtNum(t.waterReading)}</td>
+                  <td className="px-3 py-3 text-right"><input className="input !py-1.5 !px-2 max-w-[120px] text-right" type="number" value={util[t.tenantCode]?.water ?? ""} onChange={(e) => setR(t.tenantCode, "water", e.target.value)} /></td>
+                  <td className="px-3 py-3 text-right text-sky-700 tnum">{wu.toFixed(1)}</td>
+                  <td className="px-3 py-3 text-right text-slate-600 tnum">{fmtNum(t.electricReading)}</td>
+                  <td className="px-3 py-3 text-right"><input className="input !py-1.5 !px-2 max-w-[120px] text-right" type="number" value={util[t.tenantCode]?.elec ?? ""} onChange={(e) => setR(t.tenantCode, "elec", e.target.value)} /></td>
+                  <td className="px-3 py-3 text-right text-amber-700 tnum">{eu.toFixed(1)}</td>
+                  <td className="px-4 py-3 text-right font-bold text-indigo-600 tnum">{fmtMoney(amt, cur)}</td>
+                </tr>
+              );
+            })}
+            {tenants.length === 0 && (
+              <tr><td colSpan={8} className="text-center text-slate-400 py-10">尚無出租中租客。</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      <button className="btn-primary w-full md:w-auto" onClick={async () => {
+        const rows = tenants
+          .filter((t) => util[t.tenantCode]?.water || util[t.tenantCode]?.elec)
+          .map((t) => ({ tenantCode: t.tenantCode, waterCurrent: util[t.tenantCode]?.water || t.waterReading, electricCurrent: util[t.tenantCode]?.elec || t.electricReading }));
+        if (rows.length === 0) { toast("請至少輸入一位租客的讀數", "error"); return; }
+        const ok = await call("payments/utility", "POST", { rows }, "已生成水電費帳單並更新錶讀數");
+        if (ok) setUtil({});
+      }}>生成水電費帳單</button>
     </div>
   );
 }
