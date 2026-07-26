@@ -488,15 +488,18 @@ function UnitsTab({
   const [checklistTarget, setChecklistTarget] = useState<Unit | null>(null);
   const [transferTarget, setTransferTarget] = useState<Unit | null>(null);
 
-  const filtered = units.filter((u) => {
-    if (["出租中", "空置中", "維修中", "自住"].includes(filter) && u.status !== filter) return false;
-    if (filter === "即將到期" && !(u.status === "出租中" && isExpiringSoon(u.leaseEndDate))) return false;
-    if (search.trim()) {
-      const q = search.trim().toLowerCase();
-      return (u.address || "").toLowerCase().includes(q) || (u.tenantName || "").toLowerCase().includes(q);
-    }
-    return true;
-  });
+  const addressSortKey = (u: Unit) => (u.address || u.tenantName || u.tenantCode || "").trim();
+  const filtered = units
+    .filter((u) => {
+      if (["出租中", "空置中", "維修中", "自住"].includes(filter) && u.status !== filter) return false;
+      if (filter === "即將到期" && !(u.status === "出租中" && isExpiringSoon(u.leaseEndDate))) return false;
+      if (search.trim()) {
+        const q = search.trim().toLowerCase();
+        return (u.address || "").toLowerCase().includes(q) || (u.tenantName || "").toLowerCase().includes(q);
+      }
+      return true;
+    })
+    .sort((a, b) => addressSortKey(a).localeCompare(addressSortKey(b), "zh-Hant", { numeric: true, sensitivity: "base" }));
 
   function openAdd() {
     setForm(blankUnit(user.currency));
@@ -547,6 +550,8 @@ function UnitsTab({
               <th className="text-left px-3 py-2.5 font-medium">狀態</th>
               <th className="text-right px-3 py-2.5 font-medium">月租</th>
               <th className="text-right px-3 py-2.5 font-medium">押金</th>
+              <th className="text-right px-3 py-2.5 font-medium">水費單價</th>
+              <th className="text-right px-3 py-2.5 font-medium">電費單價</th>
               <th className="text-left px-3 py-2.5 font-medium">合約到期</th>
               <th className="text-right px-4 py-2.5 font-medium">操作</th>
             </tr>
@@ -571,6 +576,8 @@ function UnitsTab({
                 <td className="px-3 py-3"><span className={`badge ${unitStatusBadge(u.status)}`}>{u.status || "空置中"}</span></td>
                 <td className="px-3 py-3 text-right font-semibold text-slate-800 tnum">{fmtMoney(u.monthlyRent, user.currency)}</td>
                 <td className="px-3 py-3 text-right text-slate-600 tnum">{fmtNum(u.deposit)}</td>
+                <td className="px-3 py-3 text-right text-slate-600 tnum">{u.waterRate ? fmtMoney(u.waterRate, user.currency) : "—"}</td>
+                <td className="px-3 py-3 text-right text-slate-600 tnum">{u.electricRate ? fmtMoney(u.electricRate, user.currency) : "—"}</td>
                 <td className={`px-3 py-3 tnum ${isExpiringSoon(u.leaseEndDate) ? "text-amber-600 font-semibold" : "text-slate-600"}`}>{u.leaseEndDate || "—"}</td>
                 <td className="px-4 py-3">
                   <div className="flex justify-end gap-1.5">
@@ -587,7 +594,7 @@ function UnitsTab({
               </tr>
             ))}
             {filtered.length === 0 && (
-              <tr><td colSpan={7} className="text-center text-slate-400 py-12">尚無單位資料，點「新增單位」開始。</td></tr>
+              <tr><td colSpan={9} className="text-center text-slate-400 py-12">尚無單位資料，點「新增單位」開始。</td></tr>
             )}
           </tbody>
         </table>
