@@ -584,6 +584,7 @@ function UnitsTab({
         onClose={() => setModal(false)}
         title={form.id ? "編輯單位" : "新增單位"}
         wide
+        protectUnsaved
         footer={
           <>
             <button className="btn-ghost" onClick={() => setModal(false)}>取消</button>
@@ -679,7 +680,7 @@ function ChecklistModal({ target, onClose }: { target: Unit | null; onClose: () 
   const doneCount = items.filter((i) => i.done).length;
 
   return (
-    <Modal open={!!target} onClose={onClose} title={`入退住清單 — ${target.tenantName}`} footer={
+    <Modal open={!!target} onClose={onClose} title={`入退住清單 — ${target.tenantName}`} protectUnsaved footer={
       <>
         <button className="btn-ghost" onClick={onClose}>取消</button>
         <button className="btn-primary" onClick={save}>儲存清單</button>
@@ -733,6 +734,7 @@ function ArchiveModal({
       open={!!target}
       onClose={onClose}
       title={`退租封存 — ${target.tenantName}`}
+      protectUnsaved
       footer={
         <>
           <button className="btn-ghost" onClick={onClose}>取消</button>
@@ -790,7 +792,7 @@ function TransferModal({ source, vacantUnits, cur, onClose, call }: {
   }
 
   return (
-    <Modal open={!!source} onClose={onClose} title={`轉租 — ${source.tenantName}`} footer={
+    <Modal open={!!source} onClose={onClose} title={`轉租 — ${source.tenantName}`} protectUnsaved footer={
       <>
         <button className="btn-ghost" onClick={onClose}>取消</button>
         <button className="btn-primary" disabled={!toUnitId} onClick={async () => {
@@ -1257,7 +1259,7 @@ function BillModal({ open, onClose, tenants, cur, call }: {
     if (ok) onClose();
   }
   return (
-    <Modal open={open} onClose={onClose} title="開立帳單 / 收據" footer={
+    <Modal open={open} onClose={onClose} title="開立帳單 / 收據" protectUnsaved footer={
       <>
         <button className="btn-ghost" onClick={onClose}>取消</button>
         <button className="btn-primary" onClick={submit}>建立</button>
@@ -1305,7 +1307,7 @@ function PartialModal({ target, onClose, call }: {
   if (!target) return null;
   const owing = Math.max(target.totalAmount - target.paidAmount, 0);
   return (
-    <Modal open={!!target} onClose={onClose} title="記錄部分收款" footer={
+    <Modal open={!!target} onClose={onClose} title="記錄部分收款" protectUnsaved footer={
       <>
         <button className="btn-ghost" onClick={onClose}>取消</button>
         <button className="btn-primary" onClick={async () => {
@@ -1342,7 +1344,7 @@ function EditPaymentModal({ target, onClose, tenants, call }: {
   }, [target]);
   if (!target) return null;
   return (
-    <Modal open={!!target} onClose={onClose} title="編輯單據" footer={
+    <Modal open={!!target} onClose={onClose} title="編輯單據" protectUnsaved footer={
       <>
         <button className="btn-ghost" onClick={onClose}>取消</button>
         <button className="btn-primary" onClick={async () => {
@@ -1397,7 +1399,7 @@ function ToolsModal({ open, onClose, tenants, payments, cur, call, toast }: {
   function back() { setView("menu"); }
 
   return (
-    <Modal open={open} onClose={() => { setView("menu"); onClose(); }} title="帳務工具" wide>
+    <Modal open={open} onClose={() => { setView("menu"); onClose(); }} title="帳務工具" wide protectUnsaved>
       {view === "menu" && (
         <div className="grid md:grid-cols-2 gap-3">
           <ToolBtn icon={RotateCw} title="一鍵生成本月租金" desc="為所有出租中單位建立租金帳單" onClick={() => call("payments/generate-rent", "POST", undefined, "已生成本月租金帳單")} />
@@ -1580,7 +1582,7 @@ function RepairsTab({ units, repairs, call }: {
         {repairs.length === 0 && <div className="text-center text-slate-400 py-12">目前沒有維修申請。</div>}
       </div>
 
-      <Modal open={!!sel} onClose={() => setSel(null)} title="處理維修申請" footer={
+      <Modal open={!!sel} onClose={() => setSel(null)} title="處理維修申請" protectUnsaved footer={
         <>
           <button className="btn-ghost" onClick={() => setSel(null)}>取消</button>
           <button className="btn-primary" onClick={async () => {
@@ -1784,7 +1786,7 @@ function ExpensesTab({ cur, expenses, call }: {
         </table>
       </div>
 
-      <Modal open={modal} onClose={() => setModal(false)} title={form.id ? "編輯支出" : "新增支出"} footer={
+      <Modal open={modal} onClose={() => setModal(false)} title={form.id ? "編輯支出" : "新增支出"} protectUnsaved footer={
         <>
           <button className="btn-ghost" onClick={() => setModal(false)}>取消</button>
           <button className="btn-primary" onClick={save}>儲存</button>

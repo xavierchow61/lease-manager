@@ -150,7 +150,7 @@ export default function TenantDashboard({
         </div>
       )}
 
-      <Modal open={repairModal} onClose={() => setRepairModal(false)} title="提交維修申請" footer={
+      <Modal open={repairModal} onClose={() => setRepairModal(false)} title="提交維修申請" protectUnsaved footer={
         <>
           <button className="btn-ghost" onClick={() => setRepairModal(false)}>取消</button>
           <button className="btn-primary" onClick={submitRepair}>送出</button>

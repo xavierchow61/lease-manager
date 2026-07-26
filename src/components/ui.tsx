@@ -51,6 +51,8 @@ export function Modal({
   children,
   footer,
   wide,
+  protectUnsaved,
+  unsavedMessage = "尚未儲存，確定關閉視窗？",
 }: {
   open: boolean;
   onClose: () => void;
@@ -58,9 +60,14 @@ export function Modal({
   children: React.ReactNode;
   footer?: React.ReactNode;
   wide?: boolean;
+  protectUnsaved?: boolean;
+  unsavedMessage?: string;
 }) {
+  const [dirty, setDirty] = useState(false);
+
   useEffect(() => {
     if (!open) return;
+    setDirty(false);
     // Lock background scroll WITHOUT a layout shift: compensate for the
     // scrollbar width that disappears when we set overflow:hidden.
     const scrollbarW = window.innerWidth - document.documentElement.clientWidth;
@@ -74,20 +81,57 @@ export function Modal({
     };
   }, [open]);
 
+  useEffect(() => {
+    if (!open || !protectUnsaved || !dirty) return;
+    const warn = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty, open, protectUnsaved]);
+
+  function requestClose() {
+    if (protectUnsaved && dirty && !confirm(unsavedMessage)) return;
+    onClose();
+  }
+
+  function handleBackdropClick() {
+    if (protectUnsaved && dirty) return;
+    onClose();
+  }
+
+  function handleContentInput() {
+    if (protectUnsaved) setDirty(true);
+  }
+
+  function handleFooterClick(e: React.MouseEvent<HTMLDivElement>) {
+    if (!protectUnsaved || !dirty) return;
+    const target = e.target as HTMLElement | null;
+    const button = target?.closest("button");
+    if (!button) return;
+    if ((button.textContent || "").trim() !== "取消") return;
+    e.preventDefault();
+    e.stopPropagation();
+    requestClose();
+  }
+
   if (!open) return null;
   return (
     <div
       className="fixed inset-0 z-50 flex items-end md:items-center justify-center bg-black/40 p-0 md:p-4"
-      onClick={onClose}
+      onClick={handleBackdropClick}
     >
       <div
         className={`bg-white w-full ${wide ? "md:max-w-3xl" : "md:max-w-lg"} rounded-t-2xl md:rounded-2xl shadow-xl max-h-[92vh] flex flex-col`}
         onClick={(e) => e.stopPropagation()}
+        onInput={handleContentInput}
+        onChange={handleContentInput}
       >
         <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 shrink-0">
           <h3 className="font-bold text-slate-800">{title}</h3>
           <button
-            onClick={onClose}
+            onClick={requestClose}
             aria-label="關閉"
             className="text-slate-400 hover:text-slate-700 w-8 h-8 rounded-lg hover:bg-slate-100 flex items-center justify-center"
           >
@@ -96,7 +140,7 @@ export function Modal({
         </div>
         <div className="px-5 py-4 overflow-y-auto">{children}</div>
         {footer && (
-          <div className="px-5 py-3 border-t border-slate-100 flex gap-2 justify-end shrink-0">
+          <div className="px-5 py-3 border-t border-slate-100 flex gap-2 justify-end shrink-0" onClickCapture={handleFooterClick}>
             {footer}
           </div>
         )}
