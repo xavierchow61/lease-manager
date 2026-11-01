@@ -1,5 +1,6 @@
 import { cookies } from "next/headers";
 import { SignJWT, jwtVerify } from "jose";
+import { getSessionSecret } from "./secret";
 
 const COOKIE_NAME = "lease_session";
 const MAX_AGE = 60 * 60 * 24 * 7; // 7 days
@@ -15,20 +16,12 @@ export type SessionUser = {
   tenantCode?: string; // tenant: business tenant code
 };
 
-function getSecret(): Uint8Array {
-  const secret = process.env.SESSION_SECRET;
-  if (!secret || secret.length < 16) {
-    throw new Error("SESSION_SECRET is not set (or too short). Check your .env file.");
-  }
-  return new TextEncoder().encode(secret);
-}
-
 export async function createSession(user: SessionUser): Promise<void> {
   const token = await new SignJWT({ user })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
     .setExpirationTime(`${MAX_AGE}s`)
-    .sign(getSecret());
+    .sign(getSessionSecret());
 
   cookies().set(COOKIE_NAME, token, {
     httpOnly: true,
@@ -43,7 +36,7 @@ export async function getSession(): Promise<SessionUser | null> {
   const token = cookies().get(COOKIE_NAME)?.value;
   if (!token) return null;
   try {
-    const { payload } = await jwtVerify(token, getSecret());
+    const { payload } = await jwtVerify(token, getSessionSecret());
     return (payload.user as SessionUser) ?? null;
   } catch {
     return null;

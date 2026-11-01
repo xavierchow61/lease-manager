@@ -2,8 +2,19 @@ import { prisma } from "@/lib/db";
 import { ok, fail } from "@/lib/api";
 import { createSession } from "@/lib/session";
 import { verifyPassword } from "@/lib/passwords";
+import { createPasswordChangeToken } from "@/lib/password-change-token";
 
 const norm = (s: unknown) => String(s ?? "").trim().toLowerCase();
+
+async function forcedReset(account: { id: string; email: string; passwordHash: string }) {
+  const res = ok({
+    requirePasswordChange: true,
+    tempEmail: account.email,
+    passwordChangeToken: await createPasswordChangeToken(account.id, account.passwordHash),
+  });
+  res.headers.set("Cache-Control", "no-store");
+  return res;
+}
 
 export async function POST(req: Request) {
   const { role, id, password } = await req.json();
@@ -16,6 +27,7 @@ export async function POST(req: Request) {
     if (!account || !(await verifyPassword(password, account.passwordHash))) {
       return fail("業主帳號或密碼錯誤");
     }
+    if (account.mustChangePassword) return forcedReset(account);
     const user = {
       id: account.id,
       email: account.email,
@@ -43,9 +55,7 @@ export async function POST(req: Request) {
       return fail("租客 ID / Email 或密碼錯誤");
     }
 
-    if (account.mustChangePassword) {
-      return ok({ requirePasswordChange: true, tempEmail: account.email });
-    }
+    if (account.mustChangePassword) return forcedReset(account);
 
     // Inherit the owner's currency so the tenant view matches the bills.
     let currency = account.currency;

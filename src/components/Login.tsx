@@ -5,6 +5,7 @@ import { Building2 } from "lucide-react";
 import { api, type User } from "@/lib/client";
 import { useToast, Field } from "./ui";
 import { CURRENCY_OPTIONS } from "@/lib/money";
+import { MIN_PASSWORD_LENGTH, PASSWORD_CHANGE_TOKEN_TTL_SECONDS } from "@/lib/password-policy";
 
 type Mode = "login" | "register" | "forgot" | "changePw";
 
@@ -19,25 +20,29 @@ export default function Login({ onLogin }: { onLogin: (u: User) => void }) {
 
   // register
   const [reg, setReg] = useState({ name: "", email: "", password: "", currency: "HK$" });
-  // change password (forced)
+  // change password (forced). The token is issued only after the current password checks out.
   const [tempEmail, setTempEmail] = useState("");
+  const [changeToken, setChangeToken] = useState("");
   const [np1, setNp1] = useState("");
   const [np2, setNp2] = useState("");
 
   async function doLogin() {
     if (!id || !pw) return toast("請輸入帳號與密碼", "error");
     setLoading(true);
-    const r = await api<{ user?: User; requirePasswordChange?: boolean; tempEmail?: string }>(
-      "auth/login",
-      "POST",
-      { role, id, password: pw }
-    );
+    const r = await api<{
+      user?: User;
+      requirePasswordChange?: boolean;
+      tempEmail?: string;
+      passwordChangeToken?: string;
+    }>("auth/login", "POST", { role, id, password: pw });
     setLoading(false);
     if (!r.success) return toast(r.message || "登入失敗", "error");
     if (r.requirePasswordChange) {
+      if (!r.passwordChangeToken) return toast("無法開始密碼重設，請重新登入", "error");
       setTempEmail(r.tempEmail || "");
+      setChangeToken(r.passwordChangeToken);
       setMode("changePw");
-      toast("首次登入，請設定新密碼");
+      toast("請設定新密碼");
       return;
     }
     if (r.user) onLogin(r.user);
@@ -66,21 +71,31 @@ export default function Login({ onLogin }: { onLogin: (u: User) => void }) {
     setMode("login");
   }
 
+  function leaveChangePw() {
+    setMode("login");
+    setChangeToken("");
+    setNp1("");
+    setNp2("");
+  }
+
   async function doChangePw() {
-    if (np1.length < 4) return toast("新密碼至少 4 字元", "error");
+    if (!changeToken) return toast("密碼重設憑證已失效，請重新登入", "error");
+    if (!pw) return toast("請重新登入後再設定新密碼", "error");
+    if (np1.length < MIN_PASSWORD_LENGTH) {
+      return toast(`新密碼至少 ${MIN_PASSWORD_LENGTH} 字元`, "error");
+    }
     if (np1 !== np2) return toast("兩次密碼不一致", "error");
     setLoading(true);
     const r = await api("auth/change-password", "POST", {
-      email: tempEmail,
+      passwordChangeToken: changeToken,
+      currentPassword: pw,
       newPassword: np1,
     });
     setLoading(false);
     if (!r.success) return toast(r.message || "失敗", "error");
     toast("密碼已更新，請重新登入", "success");
-    setMode("login");
     setPw("");
-    setNp1("");
-    setNp2("");
+    leaveChangePw();
   }
 
   return (
@@ -199,6 +214,9 @@ export default function Login({ onLogin }: { onLogin: (u: User) => void }) {
             <div className="space-y-3">
               <h2 className="font-bold text-slate-800 mb-1">設定新密碼</h2>
               <p className="text-sm text-slate-500">帳號：{tempEmail}</p>
+              <p className="text-sm text-slate-500">
+                請在 {PASSWORD_CHANGE_TOKEN_TTL_SECONDS / 60} 分鐘內完成。逾時請返回登入，用目前密碼重新取得憑證。
+              </p>
               <Field label="新密碼">
                 <input className="input" type="password" value={np1} onChange={(e) => setNp1(e.target.value)} />
               </Field>
@@ -207,6 +225,9 @@ export default function Login({ onLogin }: { onLogin: (u: User) => void }) {
               </Field>
               <button className="btn-primary w-full" disabled={loading} onClick={doChangePw}>
                 {loading ? "更新中…" : "更新密碼並返回登入"}
+              </button>
+              <button className="text-sm text-slate-500 w-full text-center mt-1" onClick={leaveChangePw}>
+                ← 返回登入
               </button>
             </div>
           )}

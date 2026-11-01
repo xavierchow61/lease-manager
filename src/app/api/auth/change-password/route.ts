@@ -1,27 +1,36 @@
 import { prisma } from "@/lib/db";
 import { ok, fail } from "@/lib/api";
-import { hashPassword } from "@/lib/passwords";
+import { changePasswordWithToken } from "@/lib/password-change";
 
-const norm = (s: unknown) => String(s ?? "").trim().toLowerCase();
+function noStore<T extends Response>(res: T): T {
+  res.headers.set("Cache-Control", "no-store");
+  return res;
+}
 
-// Used both for the first-login forced reset (no session yet) and voluntary
-// password changes. Identified by email.
+// Forced reset after first login or forgot-password.
+// Requires the short-lived token from POST /api/auth/login (issued only after
+// the current password was verified) plus that current password.
+// Email alone is not accepted. Logged-in voluntary changes use
+// POST /api/account/password (session + current password).
 export async function POST(req: Request) {
-  const { email, newPassword } = await req.json();
-  if (!email || !newPassword) return fail("缺少必要參數");
-  if (String(newPassword).length < 4) return fail("新密碼至少需 4 個字元");
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return noStore(fail("缺少必要參數"));
+  }
 
-  const account = await prisma.account.findUnique({
-    where: { email: norm(email) },
+  const result = await changePasswordWithToken(body, {
+    findAccount: (id) => prisma.account.findUnique({ where: { id } }),
+    save: ({ id, passwordHash, mustChangePassword }) =>
+      prisma.account
+        .update({
+          where: { id },
+          data: { passwordHash, mustChangePassword },
+        })
+        .then(() => undefined),
   });
-  if (!account) return fail("找不到該帳號，無法更新密碼");
 
-  await prisma.account.update({
-    where: { id: account.id },
-    data: {
-      passwordHash: await hashPassword(newPassword),
-      mustChangePassword: false,
-    },
-  });
-  return ok();
+  if (!result.ok) return noStore(fail(result.message, result.status));
+  return noStore(ok());
 }
