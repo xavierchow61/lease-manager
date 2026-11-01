@@ -11,6 +11,7 @@
     "db:seed": "tsx prisma/seed.ts",
     "db:studio": "prisma studio",
     "setup": "prisma db push && tsx prisma/seed.ts",
+    "test": "node --import tsx --test test/password-change.test.ts test/change-password-route.test.ts",
     "postinstall": "prisma generate"
   },
   "dependencies": {
